@@ -1,0 +1,152 @@
+// Prisma schema — E-Learning (English) app
+// Model fields are camelCase (used in code); Postgres columns/tables are snake_case via @map/@@map.
+// API JSON is always camelCase (mapped in the controller/response layer).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Runtime: Supabase pooled connection (pgbouncer, port 6543).
+  url       = env("DATABASE_URL")
+  // Migrations: Supabase direct connection (port 5432).
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  flashcardProgress FlashcardProgress[]
+  readingAttempts   ReadingAttempt[]
+  vocabularyEntries VocabularyEntry[]
+
+  @@map("users")
+}
+
+model Topic {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  title       String
+  titleVi     String   @map("title_vi")
+  description String?
+  order       Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  flashcards Flashcard[]
+
+  @@map("topics")
+}
+
+model Flashcard {
+  id        String   @id @default(cuid())
+  topicId   String   @map("topic_id")
+  front     String
+  back      String
+  example   String?
+  order     Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  topic    Topic               @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  progress FlashcardProgress[]
+
+  @@index([topicId])
+  @@map("flashcards")
+}
+
+model FlashcardProgress {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  flashcardId String   @map("flashcard_id")
+  known       Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  flashcard Flashcard @relation(fields: [flashcardId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, flashcardId])
+  @@index([flashcardId])
+  @@map("flashcard_progress")
+}
+
+model ReadingExercise {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  title     String
+  passage   String   @db.Text
+  level     String
+  order     Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  questions ReadingQuestion[]
+  attempts  ReadingAttempt[]
+
+  @@map("reading_exercises")
+}
+
+model ReadingQuestion {
+  id           String   @id @default(cuid())
+  exerciseId   String   @map("exercise_id")
+  prompt       String
+  options      String[]
+  correctIndex Int      @map("correct_index")
+  order        Int      @default(0)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  exercise ReadingExercise @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+
+  @@index([exerciseId])
+  @@map("reading_questions")
+}
+
+model ReadingAttempt {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  exerciseId String   @map("exercise_id")
+  answers    Json
+  score      Int
+  total      Int
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exercise ReadingExercise @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([exerciseId])
+  @@map("reading_attempts")
+}
+
+// v2 — My Vocabulary. Personal, owner-scoped vocabulary entries.
+model VocabularyEntry {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  word            String
+  meaning         String
+  pronunciation   String?
+  partOfSpeech    String?  @map("part_of_speech")
+  synonyms        String[]
+  antonyms        String[]
+  exampleSentence String?  @map("example_sentence")
+  notes           String?
+  tags            String[]
+  cefrLevel       String?  @map("cefr_level")
+  isFavorite      Boolean  @default(false) @map("is_favorite")
+  known           Boolean  @default(false)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, word])
+  @@map("vocabulary_entries")
+}

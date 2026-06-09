@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (Next.js)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+        env:
+          # Build-time placeholder; real value is set in Vercel project env.
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:4000
+
+  backend:
+    name: Backend (Express + Prisma)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install deps (runs prisma generate via postinstall)
+        run: npm ci
+        env:
+          # prisma generate does not connect — placeholder is enough for CI.
+          DATABASE_URL: postgresql://user:pass@localhost:5432/ci?schema=public
+
+      - name: Typecheck
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Build (prisma generate + tsc)
+        run: npm run build
+        env:
+          DATABASE_URL: postgresql://user:pass@localhost:5432/ci?schema=public
