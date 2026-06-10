@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* Design tokens — light theme (design-spec.md §1.1). Dark theme out of scope for MVP. */
+/* Design tokens — light theme */
 :root {
   --radius: 0.75rem;
 
@@ -38,6 +38,43 @@
   --border: hsl(214 32% 91%);
   --input: hsl(214 32% 91%);
   --ring: hsl(221 83% 53%);
+}
+
+/* Dark theme */
+.dark {
+  --background: hsl(222 47% 6%);
+  --foreground: hsl(210 40% 98%);
+
+  --card: hsl(222 47% 9%);
+  --card-foreground: hsl(210 40% 98%);
+
+  --popover: hsl(222 47% 9%);
+  --popover-foreground: hsl(210 40% 98%);
+
+  --primary: hsl(221 83% 63%);
+  --primary-foreground: hsl(0 0% 100%);
+
+  --secondary: hsl(217 33% 17%);
+  --secondary-foreground: hsl(210 40% 98%);
+
+  --muted: hsl(217 33% 17%);
+  --muted-foreground: hsl(215 16% 60%);
+
+  --accent: hsl(217 33% 17%);
+  --accent-foreground: hsl(210 40% 98%);
+
+  --success: hsl(142 71% 45%);
+  --success-foreground: hsl(0 0% 100%);
+
+  --warning: hsl(38 92% 50%);
+  --warning-foreground: hsl(222 47% 11%);
+
+  --destructive: hsl(0 72% 56%);
+  --destructive-foreground: hsl(0 0% 100%);
+
+  --border: hsl(217 33% 22%);
+  --input: hsl(217 33% 22%);
+  --ring: hsl(221 83% 63%);
 }
 
 @theme inline {

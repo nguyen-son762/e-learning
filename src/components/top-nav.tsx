@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
-import { Menu, LogOut } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Menu, LogOut, Sun, Moon } from "lucide-react";
+import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils";
 import { clearToken } from "@/lib/auth";
 import type { User } from "@/lib/types";
@@ -33,6 +34,27 @@ const LINKS = [
 
 function isActive(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(href + "/");
+}
+
+function ThemeToggle() {
+  const { resolvedTheme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return <div className="h-9 w-9" />;
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+      aria-label="Chuyển chế độ sáng/tối"
+    >
+      {resolvedTheme === "dark" ? (
+        <Sun className="h-4 w-4" />
+      ) : (
+        <Moon className="h-4 w-4" />
+      )}
+    </Button>
+  );
 }
 
 export function TopNav({ user }: { user: User }) {
@@ -116,6 +138,8 @@ export function TopNav({ user }: { user: User }) {
           </nav>
         </div>
 
+        <div className="flex items-center gap-1">
+        <ThemeToggle />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -146,6 +170,7 @@ export function TopNav({ user }: { user: User }) {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        </div>
       </div>
     </header>
   );

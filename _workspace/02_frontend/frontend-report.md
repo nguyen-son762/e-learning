@@ -138,3 +138,79 @@ Không còn native `<select>`/`<textarea>` nào trong `src/`. Không có native 
 - `npx tsc --noEmit`: exit 0
 - `npm run lint`: exit 0
 - `npm run build`: exit 0 (12 routes generated)
+
+---
+
+## v3 update — Features 4, 5, 8 (2026-06-10)
+
+`npx tsc --noEmit`: **PASS**.
+
+### Feature 4 — Dashboard progress chart
+- New hook: `src/hooks/useProgressHistory.ts` → `GET /api/dashboard/progress-history?days=7|30` typed to `ListResponse<ProgressHistoryItem>`.
+- New component: `src/components/progress-chart.tsx` — shadcn `Tabs` (7d/30d) + recharts `BarChart` (Bar fill `#2563EB`, X axis `dd/MM`, Y axis integer). Loading=Skeleton 250px; error=Alert destructive; all-zero=centered "Bắt đầu học để xem tiến độ".
+- Wired into `src/app/(app)/dashboard/page.tsx` below the stat tiles.
+- Added recharts dep, added shadcn `Tabs` primitive (`src/components/ui/tabs.tsx`).
+
+### Feature 5 — SRS review UI
+- Types: `Flashcard`/`FlashcardProgressResponse` now carries optional `nextReviewAt`; added `TopicReviewResponse` (`items, total, dueCount`).
+- `markFlashcard(id, known, quality?)` now forwards an optional `quality` (0–5) in the PUT body — old callers (the standard topic page) still send `{ known }` only.
+- New hook: `src/hooks/useTopicReview.ts` → `GET /api/topics/:slug/review`.
+- New route: `src/app/(app)/topics/[slug]/review/page.tsx` — flip-card UX from the topic page; "Chưa thuộc"=quality 2, "Đã thuộc"=quality 4. Empty queue → "Không có thẻ nào cần ôn hôm nay 🎉" + back. Last card → completion screen ("🎉", "Hoàn thành ôn tập hôm nay!", "Bạn đã ôn N thẻ", back button).
+- `/topics/[slug]`: clickable warning Badge "{dueCount} thẻ cần ôn" linking to `/topics/[slug]/review`, only when `dueCount > 0`.
+
+### Feature 8 — Reading highlight → vocabulary
+- New component: `src/components/selection-popover.tsx` — listens to `mouseup` on the passage ref, shows a floating popover when selection is 1–5 words.
+- Wired into `src/app/(app)/reading/[slug]/page.tsx`. Popover is disabled after submit (`enabled={!result}`).
+- On "Thêm vào từ vựng": runs `lookupWord()` (best-effort, swallows 404/network), falls back to `findSentence(passage, word)` for `exampleSentence`, then `POST /api/vocabulary` with `{ word, meaning, pronunciation?, partOfSpeech?, exampleSentence? }`. Errors toast and DO save with `{ word, meaning: "" }` if backend rejects? — per spec we POST regardless of dictionary outcome.
+- Sonner toast on success; dismiss via ✕ or outside click.
+- Added shadcn `Popover` primitive (`src/components/ui/popover.tsx`) — not currently used in this feature (custom absolute-positioned div instead, to anchor to the live `Range` rect) but available for reuse.
+
+### Files touched
+- `src/lib/types.ts` (+ `TopicReviewResponse`, `ProgressHistoryItem`, optional `nextReviewAt`)
+- `src/hooks/useTopics.ts` (+ `quality` param)
+- `src/hooks/useProgressHistory.ts` (new)
+- `src/hooks/useTopicReview.ts` (new)
+- `src/components/ui/tabs.tsx` (new)
+- `src/components/ui/popover.tsx` (new)
+- `src/components/progress-chart.tsx` (new)
+- `src/components/selection-popover.tsx` (new)
+- `src/app/(app)/dashboard/page.tsx` (chart section)
+- `src/app/(app)/topics/[slug]/page.tsx` (due-count badge)
+- `src/app/(app)/topics/[slug]/review/page.tsx` (new route)
+- `src/app/(app)/reading/[slug]/page.tsx` (selection popover)
+- `package.json` (+ recharts, @radix-ui/react-tabs, @radix-ui/react-popover)
+
+---
+
+## v4 — Feature 7 (User-created Topics & Flashcards) — 2026-06-10
+
+Goal: let an authed user create, edit, and delete their own topics + flashcards. Seeded topics (`userId === null`) remain read-only; ownership decided by `topic.userId === storedUser.id`.
+
+### Types (`src/lib/types.ts`)
+- `TopicSummary` (and therefore `TopicDetail` via `extends`) gained `userId: string | null`.
+
+### API helpers (`src/hooks/useTopics.ts`)
+Mutation helpers follow the existing convention (`markFlashcard`, `resetTopicProgress` live here, not in `lib/api.ts`):
+- `createTopic({ title, titleVi, description? })` → `POST /api/topics` → `TopicSummary`
+- `updateTopic(slug, { title?, titleVi?, description? })` → `PUT /api/topics/:slug` → `TopicSummary`
+- `deleteTopic(slug)` → `DELETE /api/topics/:slug` → `{ success: true }`
+- `addFlashcard(slug, { front, back, example? })` → `POST /api/topics/:slug/flashcards` → `Flashcard`
+- `updateFlashcard(id, { front?, back?, example? })` → `PUT /api/flashcards/:id` → `Flashcard`
+- `deleteFlashcard(id)` → `DELETE /api/flashcards/:id` → `{ success: true }`
+
+### New pages
+- `src/app/(app)/topics/new/page.tsx` — centered max-w-lg Card form. Title (1–80) and TitleVi (1–80) required, description optional. On success redirects to `/topics/${slug}/manage`. Inline error + disabled-while-submitting button with spinner.
+- `src/app/(app)/topics/[slug]/manage/page.tsx` — flashcard manager. Owner-guard via `getStoredUser()` vs `data.userId`; non-owner → toast + redirect `/topics`. Header has `Sửa thông tin` (→ `/topics/[slug]/edit`) and `Học ngay` (→ `/topics/[slug]`). List of cards with Pencil/Trash icon buttons; clicking pencil swaps the row for an inline form, trash opens a confirm Dialog → optimistic delete with rollback on failure. `+ Thêm thẻ` button reveals an inline form at the bottom. Empty state Card with "Thêm thẻ đầu tiên" CTA. Toasts on every mutation.
+- `src/app/(app)/topics/[slug]/edit/page.tsx` — pre-filled form (title, titleVi, description). `Lưu thay đổi` → PUT → redirect `/topics/[slug]/manage`. Danger-zone Card at bottom with destructive Dialog ("Topic và tất cả X thẻ sẽ bị xoá vĩnh viễn") → DELETE → redirect `/topics`. Owner-guard same as manage.
+
+### Updated pages
+- `src/app/(app)/topics/page.tsx` — header now has `Tạo topic mới` outline Button → `/topics/new`. For owner-cards, a ghost Settings2 icon-button sits next to the % badge → `/topics/[slug]/manage`. Empty state CTAs the user toward creation.
+- `src/app/(app)/topics/[slug]/page.tsx` — added `Quản lý thẻ` outline button (Settings2 icon) next to `Reset ôn lại`, visible only when `data.userId === storedUser.id`.
+
+### Conventions
+- All UI text in Vietnamese; reused existing shadcn/ui primitives (Card, Input, Textarea, Button, Dialog, Skeleton, Label).
+- Optimistic delete with rollback on the manage page; create/update use refetch-by-redirect or in-place state replacement.
+- All endpoints typed exactly to the v4 contract — single-object responses are NOT wrapped, `DeleteResponse` for the two `success:true` shapes.
+
+### Verification
+- `npx tsc --noEmit` → exit 0 (no type errors).

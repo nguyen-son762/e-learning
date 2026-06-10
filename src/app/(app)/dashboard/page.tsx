@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState, ErrorState } from "@/components/states";
+import { ProgressChart } from "@/components/progress-chart";
 
 function StatTile({ label, value }: { label: string; value: string }) {
   return (
@@ -80,6 +81,9 @@ export default function DashboardPage() {
           value={String(totals.readingAttemptCount)}
         />
       </div>
+
+      {/* Progress chart (v3) */}
+      <ProgressChart />
 
       {/* Topic progress */}
       <section className="flex flex-col gap-4">

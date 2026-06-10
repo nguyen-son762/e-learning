@@ -25,6 +25,7 @@ model User {
   flashcardProgress FlashcardProgress[]
   readingAttempts   ReadingAttempt[]
   vocabularyEntries VocabularyEntry[]
+  createdTopics     Topic[]
 
   @@map("users")
 }
@@ -36,11 +37,14 @@ model Topic {
   titleVi     String   @map("title_vi")
   description String?
   order       Int      @default(0)
+  userId      String?  @map("user_id")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   flashcards Flashcard[]
+  user       User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
 
+  @@index([userId])
   @@map("topics")
 }
 
@@ -62,18 +66,24 @@ model Flashcard {
 }
 
 model FlashcardProgress {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
-  flashcardId String   @map("flashcard_id")
-  known       Boolean  @default(false)
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id           String    @id @default(cuid())
+  userId       String    @map("user_id")
+  flashcardId  String    @map("flashcard_id")
+  known        Boolean   @default(false)
+  // v3 — SRS (SM-2) fields. Server-internal; not serialized on the public Flashcard shape.
+  interval     Int       @default(1)
+  easeFactor   Float     @default(2.5) @map("ease_factor")
+  nextReviewAt DateTime? @map("next_review_at")
+  repetitions  Int       @default(0)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   flashcard Flashcard @relation(fields: [flashcardId], references: [id], onDelete: Cascade)
 
   @@unique([userId, flashcardId])
   @@index([flashcardId])
+  @@index([userId, nextReviewAt])
   @@map("flashcard_progress")
 }
 

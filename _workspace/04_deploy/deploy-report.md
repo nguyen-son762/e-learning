@@ -152,3 +152,78 @@ All these steps were run locally and are green. Gate any production deploy on a 
 
 ## 8. Blockers
 **None.** The one production-start blocker found (wrong `dist` entry path) was fixed and re-verified. Remaining items are user actions requiring credentials (Steps A–E), not code/config defects. No owning-engineer escalation needed.
+
+---
+
+## Features 4+5+8 Deploy Verification
+
+**Date:** 2026-06-10
+**Scope:** Features 4 (Vocabulary Notebook), 5 (Progress Dashboard / recharts), 8 (Spaced Repetition / SRS).
+**Status:** **PASS** — production build is clean; new route is in the output; SRS migration is idempotent and ordered after init+vocabulary; no new env vars required.
+
+### Build verification (re-run for v3)
+| Target | Command | Result |
+|--------|---------|--------|
+| Frontend (Next.js 16.2.7, Turbopack) | `yarn build` | **PASS** — "Compiled successfully in 2.7s", TypeScript OK, 15 routes generated (12 static + 3 dynamic added in v3). |
+
+Route list (build output, verbatim):
+```
+○ /                          ○ /vocabulary
+○ /_not-found                ƒ /vocabulary/[id]/edit
+○ /dashboard                 ○ /vocabulary/new
+○ /login                     ○ /vocabulary/study
+○ /reading
+ƒ /reading/[slug]
+ƒ /reading/[slug]/history
+○ /register
+○ /topics
+ƒ /topics/[slug]
+ƒ /topics/[slug]/review      ← new (Feature 8 SRS review session)
+```
+Confirmed: `/topics/[slug]/review` is present as a dynamic route. New v3 routes (`/vocabulary`, `/vocabulary/new`, `/vocabulary/[id]/edit`, `/vocabulary/study`, `/topics/[slug]/review`) all built successfully. Backend build status unchanged from §1 (still PASS).
+
+### Dependency check — `recharts` (Feature 5)
+- Declared in root `package.json`: `"recharts": "^3.8.1"` → resolved to `recharts@npm:3.8.1`.
+- `yarn install` completes with **no blocking errors**; one generic `YN0086` peer-requirements notice (project-wide, not recharts-specific) — non-blocking and present in prior installs too.
+- recharts is client-side only and is bundled cleanly by the Next.js build above. No SSR/Edge runtime concerns for the dashboard charts.
+
+### Prisma migration — `20260610000000_srs_fields`
+- SQL syntactically valid Postgres DDL.
+- **Idempotent:** every clause uses `IF NOT EXISTS` (4× `ADD COLUMN IF NOT EXISTS`, 1× `CREATE INDEX IF NOT EXISTS`) — safe to re-run.
+- Adds to `flashcard_progress`: `interval INT DEFAULT 1`, `ease_factor DOUBLE PRECISION DEFAULT 2.5`, `next_review_at TIMESTAMP(3)` (nullable), `repetitions INT DEFAULT 0`, plus composite index `(user_id, next_review_at)` for the "due cards" query.
+- Migration directory ordering is correct: `20260609000000_init` → `20260609010000_add_vocabulary` → `20260610000000_srs_fields`. `prisma migrate deploy` will apply only the un-applied ones in order.
+- Schema/DB parity verified: `server/prisma/schema.prisma` `model FlashcardProgress` declares the same four fields and the `@@index([userId, nextReviewAt])` that the migration creates.
+
+**Ops action required before the new backend goes live:**
+1. With production `DATABASE_URL` exported in the server context, run:
+   ```
+   cd server && npx prisma migrate deploy
+   ```
+   This is automatic if the backend host uses `npm run start:prod` (see §5) — every deploy migrates-then-boots. Manual run is only needed if you bypass that start command or want to apply migrations ahead of code deploy.
+2. Confirm by checking `_prisma_migrations` table contains a row for `20260610000000_srs_fields` with `finished_at` set.
+3. **Do not deploy the new backend endpoints (`/topics/:slug/review`, `/api/progress/srs/*`) until this migration has run** — the queries reference the new columns and will fail on the old schema.
+
+### `vercel.json` coverage
+- Existing `vercel.json` declares `framework: nextjs`, `buildCommand: next build`, `outputDirectory: .next`. The new `/topics/[slug]/review` route is a standard Next.js App Router page and is auto-included by `next build` — no `vercel.json` change required. Confirmed in the build output route list above.
+
+### Environment variables — Features 4, 5, 8
+**No new env vars required.** Verified rationale:
+- Feature 4 (Vocabulary Notebook): pure DB CRUD, JWT-authenticated — uses existing `DATABASE_URL` / `JWT_SECRET`.
+- Feature 5 (Progress Dashboard): recharts is a client-side React lib; aggregation runs server-side against the same DB — no external service, no new credentials.
+- Feature 8 (SRS Review): pure SM-2 logic over the existing `flashcard_progress` table — no external API or scheduler dependency.
+- Dictionary lookups (referenced in feature briefs) hit a public, unauthenticated dictionary API — no API key required; if a paid provider is later swapped in, that will need a new backend env var.
+
+Frontend↔API wiring is unchanged: `NEXT_PUBLIC_API_BASE_URL` (Vercel) and `CORS_ORIGIN` (API host) from §3 still cover the new endpoints. No additional Vercel project settings to change for this release.
+
+### Warnings / notes
+- The `yarn install` `YN0086` peer-requirements notice is project-wide and pre-existing — not caused by recharts. Safe to ignore for this deploy; can be cleaned up with `yarn explain peer-requirements` in a follow-up.
+- `next build` runs under Turbopack (Next 16) — no separate webpack fallback to verify.
+- No new client-side env vars (`NEXT_PUBLIC_*`) added, so no frontend redeploy-after-env-change step is needed for this release — just the standard "redeploy frontend after merging" flow.
+
+### Release ordering for this batch
+1. Run `prisma migrate deploy` against prod Postgres (or deploy backend with `start:prod` which does it automatically).
+2. Deploy backend (new SRS + vocabulary endpoints become live).
+3. Deploy frontend (Vercel) — new routes `/vocabulary*`, `/topics/[slug]/review`, dashboard charts become live.
+4. Smoke test: register/login → seed a few flashcards → `/topics/[slug]/review` shows a session → mark cards → `/dashboard` charts render → `/vocabulary` CRUD works.
+
+**Verdict:** Cleared to deploy. No code/config changes needed beyond what is already in the repo.

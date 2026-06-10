@@ -31,6 +31,8 @@ export interface TopicSummary {
   flashcardCount: number;
   knownCount: number;
   completionPercent: number; // integer 0-100
+  // v4 — Feature 7. null = seeded (read-only); non-null = owned by that user.
+  userId: string | null;
 }
 
 export interface Flashcard {
@@ -184,6 +186,20 @@ export interface FlashcardProgressResponse {
   flashcardId: string;
   known: boolean;
   updatedAt: string;
+  nextReviewAt?: string | null; // v3 — SRS scheduler. Additive (omitted by old backends).
+}
+
+// v3 — GET /api/topics/:slug/review (list wrapper + dueCount alias)
+export interface TopicReviewResponse {
+  items: Flashcard[];
+  total: number;
+  dueCount: number;
+}
+
+// v3 — GET /api/dashboard/progress-history item
+export interface ProgressHistoryItem {
+  date: string; // YYYY-MM-DD (UTC calendar date)
+  count: number;
 }
 
 export interface TopicResetResponse {

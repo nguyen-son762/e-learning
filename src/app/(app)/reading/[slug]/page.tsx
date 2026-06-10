@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useMemo, useState } from "react";
+import { use, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { ArrowLeft, Check, X, History, Loader2 } from "lucide-react";
@@ -18,6 +18,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { EmptyState, ErrorState } from "@/components/states";
+import { SelectionPopover } from "@/components/selection-popover";
 
 export default function ReadingExercisePage({
   params,
@@ -31,6 +32,7 @@ export default function ReadingExercisePage({
   const [answers, setAnswers] = useState<Record<number, number>>({});
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<ReadingAttemptResult | null>(null);
+  const passageRef = useRef<HTMLDivElement | null>(null);
 
   const questions = useMemo(
     () => (data ? [...data.questions].sort((a, b) => a.order - b.order) : []),
@@ -122,9 +124,19 @@ export default function ReadingExercisePage({
       {/* Passage */}
       <Card>
         <CardContent className="max-h-80 overflow-y-auto p-6">
-          <p className="whitespace-pre-line leading-relaxed">{data.passage}</p>
+          <div ref={passageRef}>
+            <p className="whitespace-pre-line leading-relaxed">{data.passage}</p>
+          </div>
         </CardContent>
       </Card>
+
+      {/* v3 — highlight 1–5 words to add to vocabulary. Disabled after submit. */}
+      <SelectionPopover
+        containerRef={passageRef}
+        enabled={!result}
+        passageText={data.passage}
+      />
+
 
       {/* Review mode */}
       {result && reviewQuestions ? (

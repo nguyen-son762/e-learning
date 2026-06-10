@@ -221,3 +221,156 @@ Note S6: `sort` default is `"newest"` (page.tsx:71) and is always sent. Contract
 
 ## Conclusion — shadcn refactor
 Sentinel mapping is correct in **both directions** and the sentinels are fully contained at the UI layer: the `|| sentinel` (display) and `=== sentinel ? "" : v` (change) pattern, combined with the existing `if (truthy)` guards in `toInput` (vocabulary-form.tsx:99) and `buildVocabularyQuery` (useVocabulary.ts:19), guarantees **no `CEFR_NONE`/`TAG_ALL` literal can reach the request body or query string**. Textarea and Select preserve 2-way binding and label/id a11y; filter/sort produce the identical contract query string as before; both flip-cards intentionally retain native `<button>` with explicit comments (not oversights). Typecheck + production build pass. **Gate: PASS — refactor preserves behavior, no API leakage.**
+
+---
+
+## Features 4+5+8 QA — v3 (Progress chart + SRS + Reading→Vocabulary highlight)
+
+**Date:** 2026-06-10  ·  **Inspector:** qa-inspector  ·  **Reference:** api-contract.md v3 (lines 625–650), data-model.md (FlashcardProgress SRS fields).
+**Method:** read both sides of every new boundary (producer `res.json` ↔ consumer hook generic ↔ contract). Backend `tsc --noEmit` and frontend `next build` both pass.
+
+### Verdict (final, after fix): GATE PASS — deploy-ready
+- **PASS: 36**  ·  **FAIL: 0**  ·  **UNVERIFIED: 1** (migration not yet `migrate deploy`'d — by-design until deploy)
+- First-pass FAIL was Feature 8 SelectionPopover sending `meaning: ""`. Fixed at selection-popover.tsx:131 — `const input: VocabularyInput = { word, meaning: word };` — and re-verified. The dictionary overwrite path at :134 still applies when available. POST body now satisfies `meaning: z.string().trim().min(1)` even when the dictionary 404s/fails (word is guaranteed non-empty by the 1–5 word selection guard at :61–66).
+- Backend `npx tsc --noEmit` → exit 0. Frontend `npx tsc --noEmit` → exit 0. Frontend `next build` → compiled successfully, 14 routes incl. `/topics/[slug]/review`.
+
+### Feature 4 — Progress chart (GET /api/dashboard/progress-history)
+
+| # | Boundary | Producer (backend) | Consumer (frontend) | Verdict |
+|---|----------|--------------------|--------------------|---------|
+| 4-1 | Route exists at the path the hook calls | dashboardRoutes.ts:12 `router.get("/progress-history", requireAuth, …)` mounted under `/api/dashboard` | useProgressHistory.ts:12 GET `/api/dashboard/progress-history?days=${days}` | PASS |
+| 4-2 | Response shape | dashboardController.ts:134 `res.status(200).json({ items, total: days })` where `items: Array<{ date: string; count: number }>` | useProgressHistory.ts:9 `useQuery<ListResponse<ProgressHistoryItem>>`; types.ts:198 `ProgressHistoryItem { date: string; count: number }`; types.ts:176 `ListResponse<T>={items:T[]; total:number}` | PASS — shapes match contract §625–632 exactly |
+| 4-3 | `total === days` always | controller.ts:134 sets `total: days` literally | progress-chart.tsx:40 doesn't depend on `total` (uses `data.items.every`); fine | PASS |
+| 4-4 | `date` is `YYYY-MM-DD` UTC, not ISO timestamp | controller.ts:118,130 `${y}-${pad2(m+1)}-${pad2(d)}` (no T/Z) | progress-chart.tsx:21–25 `formatTick` splits on `-` and emits `dd/MM` — would mis-render an ISO timestamp, so the calendar-string contract is load-bearing | PASS |
+| 4-5 | Zero-fill, oldest→newest | controller.ts:127–132 loop `for i=0..days-1` from `start = today - (days-1) UTC`, push `counts.get(dateStr) ?? 0` | recharts XAxis uses `dataKey="date"` in array order — receives them oldest-first | PASS |
+| 4-6 | Dedup: distinct flashcards per UTC day | controller.ts:113–123 `seen` Set keyed by `${flashcardId}|${utcDate}` | — | PASS |
+| 4-7 | `days` allowlist {7, 30} → else 400 VALIDATION_ERROR | controller.ts:80–91 throws `AppError("VALIDATION_ERROR", …)` for anything other than `"7"`/`"30"` | useProgressHistory.ts:8 typed `days: 7 \| 30`; progress-chart.tsx:84 `useState<Window>("7")` only ever passes `7` or `30` | PASS |
+| 4-8 | Wired into dashboard page | — | dashboard/page.tsx:19 imports, :86 renders `<ProgressChart />` | PASS |
+| 4-9 | Auth Bearer | dashboardRoutes.ts:12 requireAuth | api.ts attaches Bearer by default (verified previously) | PASS |
+| 4-10 | Empty/no-progress UX | controller returns zero-filled series (count=0 every day) | progress-chart.tsx:40–46 `allZero` branch shows "Bắt đầu học để xem tiến độ" — no chart, no crash | PASS |
+
+### Feature 5 — SRS (SM-2)
+
+| # | Boundary | Producer (backend) | Consumer (frontend) | Verdict |
+|---|----------|--------------------|--------------------|---------|
+| 5-1 | Prisma schema has SRS fields | schema.prisma:70–73 `interval Int @default(1)`, `easeFactor Float @default(2.5) @map("ease_factor")`, `nextReviewAt DateTime? @map("next_review_at")`, `repetitions Int @default(0)` | — | PASS |
+| 5-2 | SRS index for due-card queries | schema.prisma:82 `@@index([userId, nextReviewAt])` | — | PASS |
+| 5-3 | Migration SQL matches schema | migrations/20260610000000_srs_fields/migration.sql:4–11 adds the 4 columns with the same defaults + the same index name `flashcard_progress_user_id_next_review_at_idx`; idempotent (`IF NOT EXISTS`) | — | PASS (file present; `prisma migrate deploy` happens at deploy — see UNVERIFIED-1 below) |
+| 5-4 | PUT /api/flashcards/:id/progress accepts optional `quality` | topicController.ts:78–81 `progressSchema = z.object({ known: z.boolean(), quality: z.number().int().min(0).max(5).optional() })`; :148 `quality = body.quality ?? 3` | useTopics.ts:36–47 `markFlashcard(id, known, quality?)` includes `quality` only when caller passes a number | PASS — additive, v2 callers (`{known}` only) still work |
+| 5-5 | Response includes `nextReviewAt: string \| null` | topicController.ts:189–194 `{ flashcardId, known, updatedAt: ISO, nextReviewAt: row.nextReviewAt ? row.nextReviewAt.toISOString() : null }` | types.ts:183–188 `FlashcardProgressResponse { flashcardId, known, updatedAt, nextReviewAt?: string \| null }` | PASS — types match; field is optional in TS (consumers don't depend on it) |
+| 5-6 | Quality mapping in review session | — | review/page.tsx:89 `const quality = known ? 4 : 2;` and :100 `await markFlashcard(id, known, quality)` | PASS |
+| 5-7 | Standard topic page omits quality (default 3) | — | topics/[slug]/page.tsx:115 `await markFlashcard(id, known)` (2 args, quality undefined) → useTopics.ts:42 only adds `quality` when it's a number → body is `{ known }` | PASS — backend defaults quality=3 (controller.ts:148) |
+| 5-8 | GET /api/topics/:slug/review route exists | topicRoutes.ts:16 `router.get("/:slug/review", requireAuth, asyncHandler(getTopicReview))` mounted on `/api/topics`. Sits BEFORE `/:slug/progress/reset` (POST) so no method/path collision; sits AFTER `/:slug` (GET) but the `/review` suffix disambiguates. | useTopicReview.ts:12 GET `/api/topics/${slug}/review` | PASS |
+| 5-9 | Review response shape | topicController.ts:295–299 `{ items, total: items.length, dueCount: items.length }` where items = `Flashcard[]` via `toFlashcard(card, known)` | types.ts:191–195 `TopicReviewResponse { items: Flashcard[]; total: number; dueCount: number }`; useTopicReview.ts:9 generic = `TopicReviewResponse` | PASS — matches contract §639 exactly |
+| 5-10 | `dueCount === total` (badge alias) | controller.ts:297–298 both set to `items.length` | topics/[slug]/page.tsx:50 reads `review?.dueCount ?? 0` for the badge; review/page.tsx:139 `data.dueCount === 0` for empty branch | PASS |
+| 5-11 | Public Flashcard shape only — SRS internals not leaked | controller.ts:290–293 maps through `toFlashcard(card, known)` — no `interval/easeFactor/repetitions/nextReviewAt` selected onto items | — | PASS — contract §647 honored |
+| 5-12 | Due-card ordering: nextReviewAt ASC NULLS FIRST, then order | controller.ts:275–288 sort: null first, then nextReviewAt ascending, then `Flashcard.order`, then createdAt tiebreaker | review/page.tsx:48 sets `cards = data.items` in receive order — server-decided | PASS |
+| 5-13 | `/topics/[slug]/review/page.tsx` exists | — | src/app/(app)/topics/[slug]/review/page.tsx — present; build emits `ƒ /topics/[slug]/review` | PASS |
+| 5-14 | Reset clears SRS fields too | controller.ts:215–227 `updateMany { known:false, interval:1, easeFactor:2.5, repetitions:0, nextReviewAt:null }` | topics/[slug]/page.tsx:132–143 calls `resetTopicProgress(slug)` and locally sets cards `known:false` — UI doesn't need to read SRS fields, no UI gap | PASS — cards re-enter the due queue immediately since `nextReviewAt:null` is "NULLS FIRST" |
+| 5-15 | Badge link target matches review page route | topics/[slug]/page.tsx:181 `<Link href={\`/topics/${slug}/review\`}>` | review/page.tsx route at `/topics/[slug]/review` | PASS |
+| 5-16 | Empty due-queue UX | controller returns empty `items` and `dueCount: 0` | review/page.tsx:139–155 renders 🎉 "Không có thẻ nào cần ôn hôm nay" | PASS |
+
+### Feature 8 — Reading highlight → Vocabulary
+
+| # | Boundary | Producer (UI) | Consumer (API contract / backend) | Verdict |
+|---|----------|---------------|----------------------------------|---------|
+| 8-1 | Reading page wires selection handling | reading/[slug]/page.tsx:127 wraps the passage in `<div ref={passageRef}>`; :134–138 `<SelectionPopover containerRef={passageRef} enabled={!result} passageText={data.passage}/>` | — | PASS |
+| 8-2 | SelectionPopover component exists | src/components/selection-popover.tsx — present; mouseup handler attaches/detaches based on `enabled`, only 1–5 word selections inside the container fire | — | PASS |
+| 8-3 | Custom absolute popover doesn't conflict with layout | selection-popover.tsx:170–175 `position: absolute; top/left from Range.getBoundingClientRect() + window.scrollY/X; transform translate(-50%,-100%); z-50` — passage Card uses default flow, no `position: relative` parent intercepts; absolute against the document, anchored above selection rectangle | — | PASS — no positional conflicts; popover hovers above passage |
+| 8-4 | Disabled after submit (review mode) | reading/[slug]/page.tsx:136 `enabled={!result}`; when `result` is non-null (after submit) the popover effect short-circuits (selection-popover.tsx:40–44 clears state and skips listener) | — | PASS |
+| 8-5 | Dismiss path: outside click, ✕, collapsed selection | popover.tsx:50–66 collapsed selection clears; :118–122 `dismiss()` on ✕; :94–116 mousedown handler dismisses on outside click iff selection collapsed | — | PASS |
+| 8-6 | POST /api/vocabulary body — `word` populated | popover.tsx:129,150 `createVocabulary({ word, meaning, …optional })` calling existing `POST /api/vocabulary` hook (no new endpoint — contract §641–642) | — | PASS — feature is correctly client-only |
+| 8-7 | POST body — `meaning` non-empty per contract | popover.tsx:131 `const input: VocabularyInput = { word, meaning: word };` — seeds `meaning` with the word itself, then optionally overwrites at :134 from the dictionary fill. The 1–5 word selection guard at :61–66 ensures `word` is non-empty. | api-contract.md POST /api/vocabulary (line 416): `meaning: string (non-empty)`; vocabularyController.ts:17 zod `meaning: z.string().trim().min(1)` — now satisfied unconditionally. | PASS (was FAIL on first pass; fixed by frontend-engineer 2026-06-10) |
+| 8-8 | exampleSentence fallback uses passage sentence | popover.tsx:136–141 `findSentence(passageText, word)` — coarse `[.!?]` split; sentence containing the word, lowercased compare | contract: `exampleSentence?: string` (optional, free text) | PASS — optional, only set when found |
+| 8-9 | Type alignment to contract VocabularyInput | popover.tsx:129 `const input: VocabularyInput = …` | types.ts:135–146 `VocabularyInput` (word, meaning required; rest optional) — matches contract POST body | PASS (modulo 8-7 runtime issue) |
+| 8-10 | No new backend endpoint | — | grep: no new route, no new controller for "highlight/popover/select" — only existing `POST /api/vocabulary` from popover.tsx:150 | PASS — matches contract decision §642,649 |
+
+### Cross-cutting boundary checks
+
+| # | Check | Result |
+|---|-------|--------|
+| X-1 | Endpoint↔hook 1:1 — no orphans | New endpoints `GET /api/dashboard/progress-history`, `GET /api/topics/:slug/review` each have exactly one hook (`useProgressHistory`, `useTopicReview`). Updated `PUT /api/flashcards/:id/progress` continues to be called by `markFlashcard`. No dangling hooks. PASS |
+| X-2 | Contract crosscheck table updated | api-contract.md lines 582,584,586 list `/topics/[slug]/review`, `GET /api/topics/:slug/review`, `GET /api/dashboard/progress-history` consumers. PASS |
+| X-3 | Backend `npx tsc --noEmit` | exit 0. PASS |
+| X-4 | Frontend `npx tsc --noEmit` | exit 0. PASS |
+| X-5 | Frontend `npm run build` | compiled successfully, 14 routes generated incl. `/topics/[slug]/review`. PASS |
+| X-6 | Casing: backend response uses camelCase (`nextReviewAt`, `dueCount`; `ease_factor` only internal) | All wire fields are camelCase, no snake_case leak. PASS |
+| X-7 | Wrapper agreement (list endpoints) | progress-history uses `{items,total}` (controller :134), useProgressHistory typed as `ListResponse<ProgressHistoryItem>`, chart reads `data.items`. Topic review uses `{items,total,dueCount}`, useTopicReview typed as `TopicReviewResponse`, review page reads `data.items`/`data.dueCount`. PASS |
+| X-8 | State transitions: SRS reset clears all 4 fields, due re-queue picks up immediately (NULLS FIRST) | controller.ts:215–227 + 270 `if (p.nextReviewAt === null) return true` and sort puts nulls first. Behavior coherent: a reset card is immediately due in the review queue. PASS |
+| X-9 | Auth on new endpoints | dashboardRoutes.ts:12 `requireAuth`; topicRoutes.ts:16 `requireAuth`. PASS |
+
+### UNVERIFIED
+
+1. **`prisma migrate deploy` actually runs the `20260610000000_srs_fields` migration in prod.** The SQL is correct and idempotent (`IF NOT EXISTS`), but at the time of this audit `DATABASE_URL` is not set locally. Deferred to the deploy step (task #5).
+
+### FAIL list
+
+None (post-fix). The first-pass `selection-popover.tsx:129 meaning: ""` issue is resolved at `selection-popover.tsx:131 meaning: word`.
+
+### Conclusion (final)
+All 36 verified boundaries for Features 4 (Progress chart), 5 (SRS), and 8 (Reading highlight → Vocabulary) PASS — including the higher-risk cases: additive optional `quality` on the existing flashcard-progress endpoint with backwards-compatible default 3; `nextReviewAt` null-handling on the wire; `dueCount` as a `total` alias on the review wrapper; SRS internals (`interval`/`easeFactor`/`repetitions`/`nextReviewAt`) NOT leaked onto the public `Flashcard` shape served by `/api/topics/:slug/review`; reset clearing all 4 SRS fields so cards re-enter the queue via the NULLS-FIRST sort; the `{items,total,dueCount}` review wrapper correctly unwrapped on both sides; the zero-filled `YYYY-MM-DD` UTC calendar series for the progress chart (which `formatTick` parses with `split("-")`); the `days ∈ {7,30}` allowlist mirrored on both sides by `useState<Window>("7")`; and the post-fix SelectionPopover guaranteeing a non-empty `meaning` even when the client-side dictionary lookup fails. Build + typechecks pass on both sides. Only outstanding item is UNVERIFIED-1 (the SRS migration's `prisma migrate deploy` step on the prod database), which is deferred to task #5. **Gate: PASS — clear to deploy.**
+
+---
+
+## Feature 7 QA — User-created Topics & Flashcards (v4)
+
+Verified 2026-06-10 against `api-contract.md` v4, backend (`server/src/...`) and frontend (`src/...`).
+
+### Cross-boundary results (PASS / FAIL / UNVERIFIED)
+
+| # | Boundary | Producer (backend) | Consumer (frontend) | Status |
+|---|----------|--------------------|---------------------|--------|
+| 1 | `TopicSummary.userId: string \| null` and `TopicDetail.userId` wire shape | `server/src/lib/serializers.ts:42` (`userId: t.userId ?? null`); `server/src/controllers/topicController.ts:74` (TopicDetail includes `userId: topic.userId ?? null`) | `src/lib/types.ts:35` (`userId: string \| null` on TopicSummary); `src/lib/types.ts:48` (TopicDetail extends TopicSummary → inherits `userId`) | PASS |
+| 2a | `POST /api/topics` route mounted + auth | `server/src/routes/topicRoutes.ts:19` (`router.post("/", requireAuth, ...)`) | n/a | PASS |
+| 2b | `POST /api/topics` validates title/titleVi 1–80 trimmed | `server/src/controllers/topicController.ts:240-244` zod schema with `.trim().min(1).max(80)` | `src/app/(app)/topics/new/page.tsx:29-36` form mirrors validation (trim+len≤80) | PASS |
+| 2c | `POST /api/topics` slugifies + dedups | `server/src/controllers/topicController.ts:280-300` (`slugify` strips diacritics → `-`, `uniqueSlug` appends `-2..-100`) | n/a | PASS |
+| 2d | `createTopic()` hook POSTs correct path/body | n/a | `src/hooks/useTopics.ts:62-68` (`POST /api/topics`, body `{title, titleVi, description?}`) | PASS |
+| 3a | `PUT /api/topics/:slug` 403 guard `topic.userId === req.user.id` | `server/src/controllers/topicController.ts:342-344` (rejects when `userId === null` OR `userId !== req.userId`) | n/a | PASS |
+| 3b | `updateTopic()` hook PUTs correct path | n/a | `src/hooks/useTopics.ts:71-79` (`PUT /api/topics/${encodeURIComponent(slug)}`) | PASS |
+| 4a | `DELETE /api/topics/:slug` cascade order progress → flashcards → topic, single transaction | `server/src/controllers/topicController.ts:383-389` (`prisma.$transaction([flashcardProgress.deleteMany, flashcard.deleteMany, topic.delete])`) — across ALL users per contract §319 | n/a | PASS |
+| 4b | `deleteTopic()` hook DELETEs correct path | n/a | `src/hooks/useTopics.ts:82-87` (`DELETE /api/topics/${encodeURIComponent(slug)}`) | PASS |
+| 5a | `POST /api/topics/:slug/flashcards` returns `Flashcard` with `known:false` | `server/src/controllers/topicController.ts:427` (`res.status(201).json(toFlashcard(card, false))`) | n/a | PASS |
+| 5b | `addFlashcard()` hook POSTs to correct path | n/a | `src/hooks/useTopics.ts:90-98` (`POST /api/topics/${slug}/flashcards`) | PASS |
+| 5c | Order computed server-side as `max+1` | `server/src/controllers/topicController.ts:411-415` (`aggregate _max.order`, `nextOrder = max + 1` or `0`) | n/a | PASS |
+| 6a | `PUT /api/flashcards/:id` checks parent topic ownership | `server/src/controllers/topicController.ts:439-448` (loads card with `topic.userId`, throws 403 if `topic.userId === null \|\| !== req.userId`) | n/a | PASS |
+| 6b | `updateFlashcard()` hook PUTs correct path | n/a | `src/hooks/useTopics.ts:101-109` (`PUT /api/flashcards/${encodeURIComponent(id)}`) | PASS |
+| 7a | `DELETE /api/flashcards/:id` deletes progress rows first, transactional | `server/src/controllers/topicController.ts:487-490` (`prisma.$transaction([flashcardProgress.deleteMany({where:{flashcardId}}), flashcard.delete])`) — across ALL users per contract §400 | n/a | PASS |
+| 7b | `deleteFlashcard()` hook DELETEs correct path | n/a | `src/hooks/useTopics.ts:112-117` (`DELETE /api/flashcards/${encodeURIComponent(id)}`) | PASS |
+| 8 | `/topics/new` page exists + renders form | n/a | `src/app/(app)/topics/new/page.tsx:21-131` (form with title/titleVi/description, calls `createTopic`, redirects to `/topics/${slug}/manage`) | PASS |
+| 9a | `/topics/[slug]/manage` page exists | n/a | `src/app/(app)/topics/[slug]/manage/page.tsx:40-214` | PASS |
+| 9b | `/topics/[slug]/manage` ownership guard (userId check) | n/a | `src/app/(app)/topics/[slug]/manage/page.tsx:54-65` (`if (!me \|\| data.userId !== me.id) { toast.error; router.replace("/topics") }`); UI gated on `ownershipChecked` (line 127) | PASS |
+| 10a | `/topics/[slug]/edit` page exists | n/a | `src/app/(app)/topics/[slug]/edit/page.tsx:38-246` | PASS |
+| 10b | `/topics/[slug]/edit` has delete danger zone | n/a | `src/app/(app)/topics/[slug]/edit/page.tsx:199-243` (red-bordered Card, `Dialog`-confirmed `handleDelete` → `deleteTopic(slug)`) | PASS |
+| 10c | `/topics/[slug]/edit` ownership guard | n/a | `src/app/(app)/topics/[slug]/edit/page.tsx:55-68` same pattern as `/manage` | PASS |
+| 11a | `/topics` list page has "Tạo topic mới" button | n/a | `src/app/(app)/topics/page.tsx:33-38` (top-bar Button → `/topics/new`); also empty-state CTA lines 55-62 | PASS |
+| 11b | `/topics` per-owner manage links | n/a | `src/app/(app)/topics/page.tsx:69, 77-88` (`isOwner = userId !== null && t.userId === userId`; Settings-icon Link rendered only when `isOwner`) | PASS |
+| 12 | `/topics/[slug]` study page shows "Quản lý thẻ" for owners | n/a | `src/app/(app)/topics/[slug]/page.tsx:66, 205-212` (`isOwner = data.userId === userId`; outline Button → `/topics/${slug}/manage` rendered only when `isOwner`) | PASS |
+| B1 | Bonus — `GET /api/dashboard` `topicProgress.items[*]` carry `userId` | `server/src/controllers/dashboardController.ts:25-27` reuses `toTopicSummary` serializer which emits `userId` | `src/lib/types.ts:224` `topicProgress: ListResponse<TopicSummary>` already typed with `userId` | PASS |
+
+### Auxiliary checks
+
+| # | Check | Result |
+|---|-------|--------|
+| AUX-1 | Backend `npx tsc --noEmit` | exit 0. PASS |
+| AUX-2 | Frontend `npx tsc --noEmit` | exit 0. PASS |
+| AUX-3 | Prisma migration is idempotent | `server/prisma/migrations/20260610010000_user_topics/migration.sql:5,8-18,21` uses `ADD COLUMN IF NOT EXISTS`, `DO $$ ... IF NOT EXISTS` constraint guard, `CREATE INDEX IF NOT EXISTS`. PASS |
+| AUX-4 | Prisma schema matches | `server/prisma/schema.prisma:40,45,47` declares `userId String? @map("user_id")`, `user User? @relation(...) onDelete: SetNull`, `@@index([userId])`. Matches migration SQL and contract semantics (seeded rows keep `userId = null`). PASS |
+| AUX-5 | Route mount + auth on new endpoints | `server/src/app.ts:30-31` mounts `/api/topics` and `/api/flashcards`; all 6 new routes use `requireAuth` (`topicRoutes.ts:19,21,22,25`; `flashcardRoutes.ts:13,14`). PASS |
+| AUX-6 | `403 FORBIDDEN` error code wired | `server/src/lib/errors.ts:7,17` adds `"FORBIDDEN"` to `ErrorCode` with HTTP 403. All 6 ownership checks throw `new AppError("FORBIDDEN", ...)`. PASS |
+| AUX-7 | Endpoint↔hook 1:1 (no orphans) | All 6 v4 backend endpoints have exactly one frontend caller in `src/hooks/useTopics.ts`; all 6 v4 frontend callers target a real backend route. PASS |
+| AUX-8 | Wire response shapes match contract | `POST /api/topics` → `TopicSummary` single object (line 323); `PUT /api/topics/:slug` → `TopicSummary` (line 364); `DELETE` → `{success:true}` (lines 391, 492); `POST /:slug/flashcards` → `Flashcard` (line 427); `PUT /api/flashcards/:id` → `Flashcard` (line 465). All single objects (NOT list-wrapped) per contract. PASS |
+| AUX-9 | Patch semantics on PUT endpoints | `updateTopic` (controller.ts:346-353) and `updateFlashcard` (controller.ts:450-453) only set fields when `body.X !== undefined`. zod `.refine` (lines 252-258, 272-278) requires at least one field. PASS |
+| AUX-10 | Slugify handles Vietnamese diacritics | `slugify()` (controller.ts:280-287) uses `.normalize("NFKD").replace(/\p{Diacritic}/gu, "")` then collapses non-`[a-z0-9]` to `-`. Matches contract §263. PASS |
+
+### FAIL
+
+None.
+
+### UNVERIFIED
+
+1. **Runtime 403 vs 404 distinction not exercised end-to-end** — code review confirms `topic.userId === null` (seeded) and `topic.userId !== req.userId` (non-owner) both throw `AppError("FORBIDDEN", ...)` → 403, while unknown slug throws `AppError("NOT_FOUND", ...)` → 404. No live integration harness was run to hit the endpoints with seeded/other-user fixtures; deferred to deploy smoke (task #5).
+2. **`prisma migrate deploy` on prod database** — migration SQL is idempotent and locally clean, but `DATABASE_URL` is not set in this QA environment. Deferred to task #5.
+
+### Conclusion
+
+All 27 verified Feature 7 boundaries PASS, including the high-risk ones: (a) `userId: string | null` propagates correctly from Prisma → `toTopicSummary` serializer → wire → `TopicSummary`/`TopicDetail` types → both list page (gating the `Settings2` icon) and study page (gating the `Quản lý thẻ` button) and `/manage` + `/edit` ownership guards; (b) uniform `403 FORBIDDEN` on seeded (`userId === null`) and non-owner (`userId !== req.userId`) mutations across all 5 mutation endpoints (`PUT /topics/:slug`, `DELETE /topics/:slug`, `POST /topics/:slug/flashcards`, `PUT /flashcards/:id`, `DELETE /flashcards/:id`); (c) transactional cascade deletes in the contract-mandated order (progress → flashcards → topic; progress → flashcard) covering all users' progress rows, not just the owner's; (d) server-side slugify with diacritic-strip + `-2..-100` dedup; (e) server-side `max(order)+1` append-only ordering; (f) patch semantics (only-provided-fields-update) on both PUT endpoints with zod `.refine` requiring at least one field; (g) frontend ownership guards on `/manage` and `/edit` use `getStoredUser().id === data.userId` and `router.replace("/topics")` on mismatch, gating UI behind `ownershipChecked`; (h) endpoint↔hook 1:1 with no orphans; (i) bonus dashboard `topicProgress.items[*].userId` is emitted via the shared serializer. Backend + frontend typechecks both exit 0. **Gate: PASS — clear to deploy.** Only outstanding items are UNVERIFIED-1 (live 403/404 distinction) and UNVERIFIED-2 (prod migration deploy), both naturally exercised in task #5.

@@ -11,6 +11,7 @@ import {
   X,
   RotateCcw,
   PartyPopper,
+  Settings2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -18,11 +19,14 @@ import {
   markFlashcard,
   resetTopicProgress,
 } from "@/hooks/useTopics";
+import { useTopicReview } from "@/hooks/useTopicReview";
 import type { Flashcard } from "@/lib/types";
 import { ApiError } from "@/lib/api";
+import { getStoredUser } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
 import { EmptyState, ErrorState } from "@/components/states";
 import {
   Dialog,
@@ -42,6 +46,10 @@ export default function TopicStudyPage({
 }) {
   const { slug } = use(params);
   const { data, loading, error, refetch } = useTopicDetail(slug);
+  // v3 — surface the SRS due-card badge. Failures are non-fatal: we just hide
+  // the badge rather than blocking the topic page.
+  const { data: review } = useTopicReview(slug);
+  const dueCount = review?.dueCount ?? 0;
 
   // Local copy of cards so we can optimistically toggle `known`.
   const [cards, setCards] = useState<Flashcard[]>([]);
@@ -49,6 +57,13 @@ export default function TopicStudyPage({
   const [flipped, setFlipped] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
+  const [userId, setUserId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setUserId(getStoredUser()?.id ?? null);
+  }, []);
+
+  const isOwner = data !== null && userId !== null && data.userId === userId;
 
   useEffect(() => {
     if (data) {
@@ -169,11 +184,32 @@ export default function TopicStudyPage({
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-bold">{data.titleVi}</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-bold">{data.titleVi}</h1>
+            {dueCount > 0 && (
+              <Link href={`/topics/${slug}/review`}>
+                <Badge
+                  variant="warning"
+                  className="cursor-pointer hover:opacity-90"
+                >
+                  {dueCount} thẻ cần ôn
+                </Badge>
+              </Link>
+            )}
+          </div>
           <span className="text-sm text-[var(--muted-foreground)]">
             {knownCount}/{total} đã thuộc · {percent}%
           </span>
         </div>
+        <div className="flex flex-wrap gap-2">
+          {isOwner && (
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/topics/${slug}/manage`}>
+                <Settings2 className="h-4 w-4" />
+                Quản lý thẻ
+              </Link>
+            </Button>
+          )}
         <Dialog>
           <DialogTrigger asChild>
             <Button variant="outline" size="sm" disabled={total === 0}>
@@ -205,6 +241,7 @@ export default function TopicStudyPage({
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       <Progress value={percent} />

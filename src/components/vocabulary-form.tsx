@@ -22,6 +22,19 @@ const CEFR_LEVELS: CefrLevel[] = ["A1", "A2", "B1", "B2", "C1", "C2"];
 /** Sentinel for "no CEFR level" — Radix Select disallows an empty-string value. */
 const CEFR_NONE = "none";
 
+const POS_NONE = "none_pos";
+export const PARTS_OF_SPEECH: { value: string; label: string }[] = [
+  { value: "noun", label: "noun — danh từ" },
+  { value: "verb", label: "verb — động từ" },
+  { value: "adjective", label: "adjective — tính từ" },
+  { value: "adverb", label: "adverb — trạng từ" },
+  { value: "pronoun", label: "pronoun — đại từ" },
+  { value: "preposition", label: "preposition — giới từ" },
+  { value: "conjunction", label: "conjunction — liên từ" },
+  { value: "interjection", label: "interjection — thán từ" },
+  { value: "phrase", label: "phrase — cụm từ" },
+];
+
 /** Parse a comma/newline separated string into a deduped, trimmed list. */
 function parseList(raw: string): string[] {
   const seen = new Set<string>();
@@ -251,12 +264,24 @@ export function VocabularyForm({
         </div>
         <div className="flex flex-col gap-2">
           <Label htmlFor="partOfSpeech">Loại từ</Label>
-          <Input
-            id="partOfSpeech"
-            value={form.partOfSpeech}
-            onChange={(e) => set("partOfSpeech", e.target.value)}
-            placeholder="adjective"
-          />
+          <Select
+            value={form.partOfSpeech || POS_NONE}
+            onValueChange={(v) =>
+              set("partOfSpeech", v === POS_NONE ? "" : v)
+            }
+          >
+            <SelectTrigger id="partOfSpeech" aria-label="Loại từ">
+              <SelectValue placeholder="— Không chọn —" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={POS_NONE}>— Không chọn —</SelectItem>
+              {PARTS_OF_SPEECH.map((pos) => (
+                <SelectItem key={pos.value} value={pos.value}>
+                  {pos.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
 

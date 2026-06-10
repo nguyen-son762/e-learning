@@ -39,6 +39,7 @@ export function toTopicSummary(
     flashcardCount,
     knownCount,
     completionPercent: completionPercent(knownCount, flashcardCount),
+    userId: t.userId ?? null,
   };
 }
 

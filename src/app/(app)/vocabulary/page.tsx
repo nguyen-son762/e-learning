@@ -19,6 +19,7 @@ import {
   setVocabularyFavorite,
   deleteVocabulary,
 } from "@/hooks/useVocabulary";
+import { PARTS_OF_SPEECH } from "@/components/vocabulary-form";
 import type { VocabularyEntry, VocabularyListParams } from "@/lib/types";
 import { ApiError } from "@/lib/api";
 import { speak, isTtsSupported } from "@/lib/tts";
@@ -50,8 +51,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-/** Sentinel for "all tags" — Radix Select disallows an empty-string value. */
+/** Sentinel for "all tags/pos" — Radix Select disallows an empty-string value. */
 const TAG_ALL = "__all__";
+const POS_ALL = "__pos_all__";
 
 const SORTS: { value: NonNullable<VocabularyListParams["sort"]>; label: string }[] =
   [
@@ -183,13 +185,22 @@ export default function VocabularyListPage() {
               ))}
             </SelectContent>
           </Select>
-          <Input
-            value={partOfSpeech}
-            onChange={(e) => setPartOfSpeech(e.target.value)}
-            placeholder="Loại từ (noun…)"
-            className="h-9 w-40"
-            aria-label="Lọc theo loại từ"
-          />
+          <Select
+            value={partOfSpeech || POS_ALL}
+            onValueChange={(v) => setPartOfSpeech(v === POS_ALL ? "" : v)}
+          >
+            <SelectTrigger className="h-9 w-44" aria-label="Lọc theo loại từ">
+              <SelectValue placeholder="Tất cả loại từ" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={POS_ALL}>Tất cả loại từ</SelectItem>
+              {PARTS_OF_SPEECH.map((pos) => (
+                <SelectItem key={pos.value} value={pos.value}>
+                  {pos.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Select
             value={sort}
             onValueChange={(v) =>
