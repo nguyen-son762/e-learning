@@ -1,5 +1,7 @@
 # Data Model — English Learning App (MVP)
 
+> **v5 (2026-06-11): + Admin Reading Management.** Introduces a `Role` enum (`USER | ADMIN`) and a `role Role @default(USER)` column on `User`. Powers admin-only mutations on `ReadingExercise` and `ReadingQuestion` (CRUD). No other model changes; existing seeded `User` rows backfill to `USER`. See v5 DIFF at end.
+>
 > **v4 (2026-06-10): + User-created Topics & Flashcards (Feature 7).** `Topic` gains a nullable `userId` FK → `User.id` distinguishing seeded content (`userId IS NULL`, read-only) from user-created content (`userId` set, owner-writable). New index `@@index([userId])` on Topic. Cascade deletes (`Topic` → `Flashcard` → `FlashcardProgress`; `Flashcard` → `FlashcardProgress`) enforced server-side via transactional delete in the API layer; the Prisma relation MAY also use `onDelete: Cascade` to back it up. No changes to `Flashcard`, `FlashcardProgress`, or any other model. See v4 DIFF at end.
 >
 > **v3 (2026-06-10): + Spaced Repetition (SRS) on `FlashcardProgress`.** Added four SRS fields — `interval`, `easeFactor`, `nextReviewAt`, `repetitions` — driven by SM-2 on `PUT /api/flashcards/:id/progress`. Powers the new `GET /api/topics/:slug/review` due-queue endpoint. No schema changes for Feature 4 (progress chart is computed from existing `FlashcardProgress` rows) or Feature 8 (reading→vocabulary is client-only on top of existing `VocabularyEntry`). See v3 DIFF at end.
@@ -15,7 +17,7 @@ Prisma data model. Postgres. All DB column names use Prisma default mapping (cam
 ## Entities
 
 ### User
-A learner account. Auth is email + password (bcrypt hash), JWT issued on login.
+A learner account (or admin). Auth is email + password (bcrypt hash), JWT issued on login. As of v5, every user carries a `role` distinguishing regular learners (`USER`) from platform admins (`ADMIN`).
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -23,12 +25,27 @@ A learner account. Auth is email + password (bcrypt hash), JWT issued on login.
 | email | String | unique, lowercased |
 | passwordHash | String | bcrypt; never serialized to API |
 | name | String | display name |
+| role | Role | *(v5)* `USER` (default) \| `ADMIN`; gates `/admin/*` routes and reading-content mutations |
 | createdAt | DateTime | default now() |
 | updatedAt | DateTime | @updatedAt |
 
 Relations: `flashcardProgress[]`, `readingAttempts[]`, `vocabularyEntries[]`, `topics[]` *(v4 — user-created topics owned by this user)*.
 
-> No `role` field in MVP — every user is a learner. As of v4, users CAN author their own topics + flashcards (Feature 7); seeded content (topics with `userId IS NULL`) remains read-only for everyone. ASSUMPTION: an instructor role with cross-user authoring is still out of scope.
+#### Role enum *(v5)*
+
+```prisma
+enum Role {
+  USER
+  ADMIN
+}
+```
+
+Prisma column: `role Role @default(USER)`. The JWT payload MAY embed `role` to short-circuit DB lookups on the admin middleware, but the authoritative source remains the `User.role` column — refetch on token refresh / role change.
+
+> **Role semantics (v5):**
+> - `USER` (default) — standard learner. Sees `/admin/*` as `404` (route not rendered) and any `/api/reading-exercises` content mutation returns `403 FORBIDDEN`.
+> - `ADMIN` — platform admin. Authoring authority over reading content only (CRUD on `ReadingExercise` + `ReadingQuestion`). Admins are still subject to the v4 ownership rules for user-created topics/flashcards — they do **not** get bypass on other users' personal content. Promotion to `ADMIN` is out-of-band (seed script / DB update); no self-service endpoint in v5.
+> - As of v4, users CAN still author their own topics + flashcards (Feature 7); seeded content (topics with `userId IS NULL`) remains read-only for everyone, ADMIN included — admin authority covers reading exercises, not seeded vocabulary topics. ASSUMPTION: an instructor role with cross-user vocabulary authoring is still out of scope.
 
 ---
 
@@ -347,3 +364,23 @@ known:false      ──toggle (PUT …/progress)──▶ known:true      ──
 - **No `order` re-pack on flashcard delete** — gaps are allowed; new cards continue from `max(existing order) + 1` (or `0` for the first card).
 - **No changes** to `User` (other than the inverse `topics[]` relation), `Flashcard`, `FlashcardProgress`, `ReadingExercise`, `ReadingQuestion`, `ReadingAttempt`, `VocabularyEntry`.
 - **Migration note for backend:** the new `userId` column on `Topic` is **nullable** — all existing seeded rows backfill to `NULL` (i.e. correctly classified as seeded). No data-migration script is needed beyond the Prisma migration itself. Add the `@@index([userId])` in the same migration.
+
+---
+
+## DIFF — v5 (Admin Reading Management)
+
+- **New enum:** `Role { USER, ADMIN }` (Prisma `enum`).
+- **Extended model:** `User` gains one column:
+  - `role: Role` — default `USER`. Backfills cleanly to `USER` on existing rows; no data-migration script needed beyond the Prisma migration.
+- **Authority granted by `ADMIN`:**
+  - CRUD on `ReadingExercise` (create / update / delete) via the 3 new exercise endpoints.
+  - CRUD on `ReadingQuestion` (create / update / delete) via the 3 new question endpoints.
+  - Admins do NOT get any new authority over seeded `Topic` rows (still permanently read-only for everyone) or over other users' `Topic`/`Flashcard`/`VocabularyEntry` rows (v4 ownership rules unchanged).
+- **API serialization:**
+  - `role` is exposed on `GET /api/auth/me` so the frontend can guard `/admin/*` routes and conditionally render admin nav. It is NOT exposed on any other endpoint (auth register/login responses keep their existing `User` shape — frontend re-fetches `/me` after login if it needs the role).
+  - `correctIndex` continues to be **excluded** from the public `ReadingExerciseDetail` response (used by `/reading/[slug]`). The new admin question-write endpoints return a separate `ReadingQuestionAdmin` shape that DOES include `correctIndex` so the admin UI can render and edit it — this is the only path on which `correctIndex` leaks to the client, and it is gated by the admin middleware.
+- **No changes** to `ReadingExercise`, `ReadingQuestion`, `ReadingAttempt`, `Topic`, `Flashcard`, `FlashcardProgress`, `VocabularyEntry` columns — only the User model changes. The 6 new admin endpoints write to the existing reading tables using the existing columns; no schema migration is needed on the reading tables.
+- **Migration note for backend:**
+  - Add the `Role` enum + the `role` column on `User` in a single Prisma migration. Default `USER` makes the column NOT NULL safely.
+  - The first ADMIN account is promoted via the seed script (or a one-off `UPDATE "User" SET role = 'ADMIN' WHERE email = ...`). There is **no** self-service "become admin" endpoint in v5.
+  - The JWT payload SHOULD include `role` to avoid an extra DB read on every admin request, but the admin middleware MUST also refetch when the role claim is missing (older tokens issued before the migration) — treat missing claim as `USER` and force the user to re-login to upgrade.

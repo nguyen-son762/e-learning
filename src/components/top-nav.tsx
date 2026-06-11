@@ -25,12 +25,6 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 
-const LINKS = [
-  { href: "/dashboard", label: "Tổng quan" },
-  { href: "/topics", label: "Flashcard" },
-  { href: "/reading", label: "Reading" },
-  { href: "/vocabulary", label: "Từ vựng của tôi" },
-];
 
 function isActive(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(href + "/");
@@ -61,6 +55,14 @@ export function TopNav({ user }: { user: User }) {
   const pathname = usePathname();
   const router = useRouter();
   const [open, setOpen] = useState(false);
+
+  const links = [
+    { href: "/dashboard", label: "Tổng quan" },
+    { href: "/topics", label: "Flashcard" },
+    { href: "/reading", label: "Reading" },
+    { href: "/vocabulary", label: "Từ vựng của tôi" },
+    ...(user.role === "ADMIN" ? [{ href: "/admin/reading", label: "Quản trị" }] : []),
+  ];
 
   function logout() {
     clearToken();
@@ -93,7 +95,7 @@ export function TopNav({ user }: { user: User }) {
                 📚 EngLearn
               </SheetTitle>
               <nav className="flex flex-col gap-1">
-                {LINKS.map((l) => (
+                {links.map((l) => (
                   <Link
                     key={l.href}
                     href={l.href}
@@ -121,7 +123,7 @@ export function TopNav({ user }: { user: User }) {
           </Link>
 
           <nav className="hidden items-center gap-1 md:flex">
-            {LINKS.map((l) => (
+            {links.map((l) => (
               <Link
                 key={l.href}
                 href={l.href}

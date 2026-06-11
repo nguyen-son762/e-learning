@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
-import { getToken, clearToken } from "@/lib/auth";
+import { getToken, clearToken, setStoredUser } from "@/lib/auth";
 import { fetchMe } from "@/hooks/useAuth";
 import type { User } from "@/lib/types";
 import { TopNav } from "@/components/top-nav";
@@ -31,6 +31,7 @@ export default function AppLayout({
     fetchMe()
       .then((res) => {
         if (!active) return;
+        setStoredUser(res.user);
         setUser(res.user);
         setStatus("ready");
       })

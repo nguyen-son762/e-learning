@@ -1,5 +1,19 @@
 # API Contract — English Learning App (MVP)
 
+> **v5 (2026-06-11): + Admin Reading Management.**
+> - New `Role` (`"USER" | "ADMIN"`) carried on `User`. `GET /api/auth/me` now returns `user.role` so the frontend can guard `/admin/*` routes and conditionally render admin nav.
+> - `ReadingExerciseSummary` gains `createdAt: string (ISO)` (additive, sortable on the admin list).
+> - 6 new admin endpoints (all require `role === "ADMIN"`; non-admin authed user → `403 FORBIDDEN`):
+>   - `POST /api/reading-exercises`
+>   - `PUT /api/reading-exercises/:slug`
+>   - `DELETE /api/reading-exercises/:slug`
+>   - `POST /api/reading-exercises/:slug/questions`
+>   - `PUT /api/reading-exercises/:slug/questions/:id`
+>   - `DELETE /api/reading-exercises/:slug/questions/:id`
+> - New shape `ReadingQuestionAdmin` (includes `correctIndex`) returned by the question-write endpoints — admin-only path; public `ReadingQuestionPublic`/`ReadingExerciseDetail` still exclude `correctIndex`.
+> - Existing reading read-endpoints (`GET /api/reading-exercises`, `GET /api/reading-exercises/:slug`) and attempt endpoints (`POST /api/reading-exercises/:slug/attempts`, `GET /api/reading-exercises/:slug/attempts`) are **unchanged**.
+> Same conventions (camelCase, `{items,total}` list wrapper, `{error:{code,message}}`, Bearer auth). See v5 DIFF at end.
+>
 > **v4 (2026-06-10): + User-created Topics & Flashcards (Feature 7).**
 > - `TopicSummary` / `TopicDetail` gain `userId: string | null` — `null` = seeded (read-only); non-null = owner-writable.
 > - New error code `403 FORBIDDEN` for non-owner mutations on user-created content.
@@ -43,7 +57,7 @@
 | 400 | `VALIDATION_ERROR` | malformed/invalid body or params |
 | 401 | `UNAUTHENTICATED` | missing/invalid/expired token |
 | 401 | `INVALID_CREDENTIALS` | wrong email/password on login |
-| 403 | `FORBIDDEN` | caller is authenticated but not the resource owner |
+| 403 | `FORBIDDEN` | caller is authenticated but lacks authority — not the resource owner (v4) OR not `ADMIN` for an admin-only endpoint (v5) |
 | 404 | `NOT_FOUND` | resource (topic/exercise/card) does not exist |
 | 409 | `EMAIL_TAKEN` | register with an already-used email |
 | 500 | `INTERNAL_ERROR` | unexpected server error |
@@ -53,7 +67,7 @@
 ## Shared object shapes
 
 ```ts
-User        { id: string, email: string, name: string, createdAt: string }
+User        { id: string, email: string, name: string, role: "USER" | "ADMIN", createdAt: string }  // role added v5
 AuthResponse{ token: string, user: User }
 
 TopicSummary{ id: string, slug: string, title: string, titleVi: string,
@@ -73,9 +87,12 @@ TopicDetail { id: string, slug: string, title: string, titleVi: string,
 ReadingQuestionPublic { id: string, prompt: string, options: string[], order: number } // NO correctIndex
 ReadingQuestionGraded { id: string, prompt: string, options: string[], order: number,
                         correctIndex: number, selectedIndex: number, correct: boolean }
+ReadingQuestionAdmin  { id: string, exerciseId: string, prompt: string, options: string[],
+                        correctIndex: number, order: number, createdAt: string }      // (v5) admin-only — INCLUDES correctIndex
 
 ReadingExerciseSummary{ id: string, slug: string, title: string, level: string,
-                        questionCount: number, bestScore: number | null }  // bestScore per-authed-user
+                        questionCount: number, bestScore: number | null,
+                        createdAt: string }                                            // (v5) createdAt added — additive
 ReadingExerciseDetail { id: string, slug: string, title: string, level: string,
                         passage: string, questions: ReadingQuestionPublic[] }
 
@@ -111,9 +128,10 @@ Response 201:
 ```json
 {
   "token": "eyJhbGciOi...",
-  "user": { "id": "ckv1...", "email": "an@example.com", "name": "An Nguyen", "createdAt": "2026-06-09T08:30:00.000Z" }
+  "user": { "id": "ckv1...", "email": "an@example.com", "name": "An Nguyen", "role": "USER", "createdAt": "2026-06-09T08:30:00.000Z" }
 }
 ```
+`role` *(v5)* is always `"USER"` on register — admins are promoted out-of-band (seed/DB).
 Errors: 400 `VALIDATION_ERROR`, 409 `EMAIL_TAKEN`.
 
 ---
@@ -129,21 +147,23 @@ Response 200:
 ```json
 {
   "token": "eyJhbGciOi...",
-  "user": { "id": "ckv1...", "email": "an@example.com", "name": "An Nguyen", "createdAt": "2026-06-09T08:30:00.000Z" }
+  "user": { "id": "ckv1...", "email": "an@example.com", "name": "An Nguyen", "role": "USER", "createdAt": "2026-06-09T08:30:00.000Z" }
 }
 ```
+`role` *(v5)* reflects the user's stored role at login time (`"USER"` or `"ADMIN"`).
 Errors: 400 `VALIDATION_ERROR`, 401 `INVALID_CREDENTIALS`.
 
 ---
 
 ### GET /api/auth/me
-Consumed by: `/` (redirect logic), `app/(app)/layout.tsx` (auth guard), `/dashboard`
+Consumed by: `/` (redirect logic), `app/(app)/layout.tsx` (auth guard + admin nav guard), `/dashboard`, `app/(app)/admin/**` *(v5 — client-side admin route guard)*
 Auth: **yes**
 Request: none
 Response 200:
 ```json
-{ "user": { "id": "ckv1...", "email": "an@example.com", "name": "An Nguyen", "createdAt": "2026-06-09T08:30:00.000Z" } }
+{ "user": { "id": "ckv1...", "email": "an@example.com", "name": "An Nguyen", "role": "ADMIN", "createdAt": "2026-06-09T08:30:00.000Z" } }
 ```
+- `role` *(v5)* — `"USER"` | `"ADMIN"`. The frontend uses this to (a) conditionally render the "Quản trị" nav item in the authed shell, and (b) guard `/admin/*` routes client-side. The backend STILL enforces admin authority on every `/api/reading-exercises` write endpoint — the client guard is UX, not security.
 Errors: 401 `UNAUTHENTICATED`.
 
 ---
@@ -516,7 +536,7 @@ Errors: 401 `UNAUTHENTICATED`, 400 `VALIDATION_ERROR` (invalid `days` — anythi
 # Reading exercises
 
 ### GET /api/reading-exercises
-Consumed by: `/reading`
+Consumed by: `/reading`, `/admin/reading` *(v5 — admin list view)*
 Auth: **yes** (`bestScore` is per-user)
 Request: none
 Response 200 — **list wrapper**:
@@ -524,12 +544,13 @@ Response 200 — **list wrapper**:
 {
   "items": [
     { "id": "rex_1", "slug": "city-life", "title": "City Life",
-      "level": "beginner", "questionCount": 5, "bestScore": 4 }
+      "level": "beginner", "questionCount": 5, "bestScore": 4,
+      "createdAt": "2026-06-01T08:00:00.000Z" }
   ],
   "total": 1
 }
 ```
-Each item is `ReadingExerciseSummary`. `bestScore` = user's highest `score` for the exercise, or `null` if never attempted. Errors: 401 `UNAUTHENTICATED`.
+Each item is `ReadingExerciseSummary`. `bestScore` = user's highest `score` for the exercise, or `null` if never attempted. `createdAt` *(v5 — additive)* is the ISO 8601 creation timestamp; admin list sorts by `createdAt DESC` by default. Errors: 401 `UNAUTHENTICATED`.
 
 ---
 

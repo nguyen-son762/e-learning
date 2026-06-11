@@ -10,6 +10,7 @@ export interface User {
   id: string;
   email: string;
   name: string;
+  role: "USER" | "ADMIN"; // v5
   createdAt: string; // ISO 8601
 }
 
@@ -70,6 +71,17 @@ export interface ReadingExerciseSummary {
   level: string;
   questionCount: number;
   bestScore: number | null; // null if never attempted
+  createdAt: string; // v5
+}
+
+export interface ReadingQuestionAdmin {
+  id: string;
+  exerciseId: string;
+  prompt: string;
+  options: string[];
+  correctIndex: number;
+  order: number;
+  createdAt: string;
 }
 
 export interface ReadingExerciseDetail {

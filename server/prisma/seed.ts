@@ -383,9 +383,22 @@ async function main() {
     }
   }
 
+  // Admin user (idempotent)
+  const adminHash = await bcrypt.hash("Admin@123", 10);
+  await prisma.user.upsert({
+    where: { email: "admin@elearning.com" },
+    update: {},
+    create: {
+      email: "admin@elearning.com",
+      name: "Admin",
+      passwordHash: adminHash,
+      role: "ADMIN",
+    },
+  });
+
   // eslint-disable-next-line no-console
   console.log(
-    `Seeded ${topics.length} topics, ${exercises.length} reading exercises, ${vocabSeed.length} vocabulary entries (if empty), demo user (demo@example.com / secret123).`
+    `Seeded ${topics.length} topics, ${exercises.length} reading exercises, ${vocabSeed.length} vocabulary entries (if empty), demo user (demo@example.com / secret123), admin user (admin@elearning.com / Admin@123).`
   );
 }
 

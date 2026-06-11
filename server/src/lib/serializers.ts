@@ -16,6 +16,7 @@ export function toUser(u: PrismaUser) {
     id: u.id,
     email: u.email,
     name: u.name,
+    role: u.role as "USER" | "ADMIN",
     createdAt: iso(u.createdAt),
   };
 }
@@ -67,6 +68,19 @@ export function toReadingExerciseSummary(
     level: e.level,
     questionCount,
     bestScore,
+    createdAt: iso(e.createdAt),
+  };
+}
+
+export function toReadingQuestionAdmin(q: PrismaReadingQuestion) {
+  return {
+    id: q.id,
+    exerciseId: q.exerciseId,
+    prompt: q.prompt,
+    options: q.options,
+    correctIndex: q.correctIndex,
+    order: q.order,
+    createdAt: iso(q.createdAt),
   };
 }
 
