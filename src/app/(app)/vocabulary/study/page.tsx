@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -15,8 +16,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useVocabulary, setVocabularyProgress } from "@/hooks/useVocabulary";
+import { useVocabularyTopics } from "@/hooks/useVocabularyTopics";
 import { useDashboard } from "@/hooks/useDashboard";
+import { useAuthContext } from "@/components/auth-context";
 import type { VocabularyEntry } from "@/lib/types";
+import { VOCABULARY_TOPIC_NONE } from "@/lib/types";
 import { ApiError } from "@/lib/api";
 import { speak, isTtsSupported } from "@/lib/tts";
 import { HanziText } from "@/components/hanzi-text";
@@ -28,10 +32,29 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState, ErrorState } from "@/components/states";
 
 export default function VocabularyStudyPage() {
-  // Deck = full vocabulary set (sorted oldest→newest for stable order).
-  const { data, loading, error, refetch } = useVocabulary({ sort: "oldest" });
+  const { user } = useAuthContext();
+  const language = user.language ?? "en";
+  const searchParams = useSearchParams();
+  // v8 — deep-link from /vocabulary chip filter scopes the deck.
+  const vocabularyTopicId = searchParams.get("vocabularyTopicId") ?? undefined;
+
+  // Deck = vocabulary set (sorted oldest→newest), optionally topic-scoped.
+  const { data, loading, error, refetch } = useVocabulary({
+    sort: "oldest",
+    vocabularyTopicId,
+  });
   // v7 — surface "n cards due today" CTA (language-scoped via dashboard).
   const { data: dash } = useDashboard();
+  // v8 — fetch topics so we can render the active topic name in the heading.
+  const { data: topicsData } = useVocabularyTopics(language);
+  const activeTopic = useMemo(() => {
+    if (!vocabularyTopicId || vocabularyTopicId === VOCABULARY_TOPIC_NONE) {
+      return null;
+    }
+    return (
+      topicsData?.items.find((t) => t.id === vocabularyTopicId) ?? null
+    );
+  }, [vocabularyTopicId, topicsData]);
   const ttsOk = isTtsSupported();
 
   const [cards, setCards] = useState<VocabularyEntry[]>([]);
@@ -127,6 +150,22 @@ export default function VocabularyStudyPage() {
       <div className="flex flex-col gap-1">
         <h1 className="text-2xl font-bold">Học từ vựng của tôi</h1>
         <div className="flex flex-wrap items-center gap-2">
+          {/* v8 — show the active topic-scope when deep-linked from /vocabulary. */}
+          {activeTopic && (
+            <Badge variant="outline" className="gap-1.5">
+              {activeTopic.color && (
+                <span
+                  aria-hidden
+                  className="inline-block h-1.5 w-1.5 rounded-full"
+                  style={{ backgroundColor: activeTopic.color }}
+                />
+              )}
+              Chủ đề: {activeTopic.name}
+            </Badge>
+          )}
+          {vocabularyTopicId === VOCABULARY_TOPIC_NONE && (
+            <Badge variant="outline">Chủ đề: Chưa gắn</Badge>
+          )}
           <span className="text-sm text-[var(--muted-foreground)]">
             {knownCount}/{total} đã thuộc · {percent}%
           </span>

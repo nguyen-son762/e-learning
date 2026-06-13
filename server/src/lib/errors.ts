@@ -8,6 +8,7 @@ export type ErrorCode =
   | "LANGUAGE_NOT_SELECTED"
   | "NOT_FOUND"
   | "EMAIL_TAKEN"
+  | "TOPIC_NAME_CONFLICT"
   | "INTERNAL_ERROR";
 
 const STATUS_BY_CODE: Record<ErrorCode, number> = {
@@ -18,16 +19,24 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   LANGUAGE_NOT_SELECTED: 403,
   NOT_FOUND: 404,
   EMAIL_TAKEN: 409,
+  TOPIC_NAME_CONFLICT: 409,
   INTERNAL_ERROR: 500,
 };
+
+// v8 — optional machine-readable details on a VALIDATION_ERROR (e.g. `field: "vocabularyTopicId"`).
+export interface AppErrorDetails {
+  field?: string;
+}
 
 export class AppError extends Error {
   code: ErrorCode;
   status: number;
+  details?: AppErrorDetails;
 
-  constructor(code: ErrorCode, message: string) {
+  constructor(code: ErrorCode, message: string, details?: AppErrorDetails) {
     super(message);
     this.code = code;
     this.status = STATUS_BY_CODE[code];
+    if (details) this.details = details;
   }
 }

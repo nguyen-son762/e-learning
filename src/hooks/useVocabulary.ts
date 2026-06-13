@@ -23,6 +23,7 @@ function buildVocabularyQuery(params: VocabularyListParams = {}): string {
   if (params.favorite) q.set("favorite", params.favorite);
   if (params.sort) q.set("sort", params.sort);
   if (params.language) q.set("language", params.language); // v6
+  if (params.vocabularyTopicId) q.set("vocabularyTopicId", params.vocabularyTopicId); // v8 — `__none__` selects untagged.
   const s = q.toString();
   return s ? `?${s}` : "";
 }

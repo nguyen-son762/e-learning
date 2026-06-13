@@ -172,6 +172,7 @@ export interface VocabularyEntry {
   pinyin: string | null; // v6 — Hanyu Pinyin with tone marks. null when language === "en"
   hskLevel: number | null; // v6 — integer 1–6. null when language === "en"
   language: Language; // v6
+  vocabularyTopicId: string | null; // v8 — FK → VocabularyTopic.id (owned by same user, same language); null = untagged.
   isFavorite: boolean;
   known: boolean;
   createdAt: string;
@@ -183,6 +184,9 @@ export interface VocabularyEntry {
  * v6 — when `language === "zh"`, pinyin/hskLevel may be sent and cefrLevel must
  * be omitted; when `language === "en"`, cefrLevel may be sent and pinyin/hskLevel
  * must be omitted. `language` itself is optional on POST (inherits from user.language).
+ * v8 — `vocabularyTopicId` is optional; explicit `null` clears the tag on PUT and
+ * is equivalent to omission on POST. Non-null MUST reference a topic owned by the
+ * caller in the same language; cross-language assignment is rejected at write time.
  */
 export interface VocabularyInput {
   word: string;
@@ -198,6 +202,7 @@ export interface VocabularyInput {
   pinyin?: string; // v6
   hskLevel?: HskLevel; // v6
   language?: Language; // v6 — optional on POST; server inherits from user
+  vocabularyTopicId?: string | null; // v8 — optional; null clears the tag (PUT) or stays untagged (POST).
 }
 
 /** Query params for GET /api/vocabulary (all optional). */
@@ -208,7 +213,15 @@ export interface VocabularyListParams {
   favorite?: "true" | "false";
   sort?: "newest" | "oldest" | "az";
   language?: Language; // v6 — optional override; defaults to user.language
+  /**
+   * v8 — filter by topic id. Special sentinel `"__none__"` selects untagged
+   * entries (`vocabularyTopicId IS NULL`). Unknown id → empty result (no error).
+   */
+  vocabularyTopicId?: string;
 }
+
+/** v8 — sentinel value the GET /api/vocabulary filter accepts for "untagged". */
+export const VOCABULARY_TOPIC_NONE = "__none__";
 
 /** PUT /api/vocabulary/:id/favorite → minimal shape. */
 export interface VocabularyFavoriteResponse {
@@ -225,6 +238,49 @@ export interface VocabularyProgressResponse {
 /** DELETE /api/vocabulary/:id → { success: true }. */
 export interface DeleteResponse {
   success: boolean;
+}
+
+// ---- v8 — Personal Vocabulary Topics ----
+
+/**
+ * VocabularyTopic — per-user, per-language label users attach to vocab entries.
+ * Distinct from `TopicSummary`/`TopicDetail` (the v4 flashcard bucket) and from
+ * `VocabularyEntry.tags[]` (free-text labels). Uniqueness is `(userId, language, name)`.
+ */
+export interface VocabularyTopic {
+  id: string;
+  userId: string;
+  name: string;
+  color: string | null; // hex `#RRGGBB`; null → frontend renders a default chip color.
+  language: Language;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** POST /api/vocabulary-topics body. `language` optional → inherits user.language. */
+export interface VocabularyTopicCreateInput {
+  name: string;
+  color?: string | null;
+  language?: Language;
+}
+
+/**
+ * PATCH /api/vocabulary-topics/:id body — patch semantics; only provided fields update.
+ * `language` is immutable after create and MUST NOT be sent.
+ */
+export interface VocabularyTopicPatchInput {
+  name?: string;
+  color?: string | null;
+}
+
+/** POST and PATCH responses wrap the topic in `{ item }`. */
+export interface VocabularyTopicItemResponse {
+  item: VocabularyTopic;
+}
+
+/** DELETE /api/vocabulary-topics/:id → { id } (matches v2/v4 delete precedent). */
+export interface VocabularyTopicDeleteResponse {
+  id: string;
 }
 
 // ---- v6 — Language preference endpoint ----

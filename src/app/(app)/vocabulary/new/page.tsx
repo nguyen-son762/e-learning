@@ -1,11 +1,13 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import { createVocabulary } from "@/hooks/useVocabulary";
-import type { VocabularyInput } from "@/lib/types";
+import { useVocabularyTopics } from "@/hooks/useVocabularyTopics";
+import type { VocabularyInput, VocabularyTopic } from "@/lib/types";
 import { useAuthContext } from "@/components/auth-context";
 import { VocabularyForm } from "@/components/vocabulary-form";
 
@@ -14,6 +16,13 @@ export default function NewVocabularyPage() {
   const { user } = useAuthContext();
   // v6 — gated by (app)/layout: user.language is non-null here.
   const language = user.language ?? "en";
+
+  // v8 — topics for the "Chủ đề từ vựng" select; scoped to user.language for /new.
+  const { data: topicsData } = useVocabularyTopics(language);
+  const [topics, setTopics] = useState<VocabularyTopic[]>([]);
+  useEffect(() => {
+    if (topicsData) setTopics(topicsData.items);
+  }, [topicsData]);
 
   async function handleSubmit(input: VocabularyInput) {
     await createVocabulary(input);
@@ -38,6 +47,10 @@ export default function NewVocabularyPage() {
         submitLabel="Lưu từ"
         onSubmit={handleSubmit}
         showDictionary
+        topics={topics}
+        onTopicCreated={(t) =>
+          setTopics((cur) => [t, ...cur.filter((x) => x.id !== t.id)])
+        }
       />
     </div>
   );

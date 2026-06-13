@@ -10,9 +10,14 @@ export function errorHandler(
   _next: NextFunction
 ): void {
   if (err instanceof AppError) {
-    res.status(err.status).json({
-      error: { code: err.code, message: err.message },
-    });
+    const payload: { code: string; message: string; field?: string } = {
+      code: err.code,
+      message: err.message,
+    };
+    // v8 — surface machine-readable `field` on VALIDATION_ERROR when supplied
+    // (e.g. POST/PUT /api/vocabulary with bad vocabularyTopicId).
+    if (err.details?.field) payload.field = err.details.field;
+    res.status(err.status).json({ error: payload });
     return;
   }
 

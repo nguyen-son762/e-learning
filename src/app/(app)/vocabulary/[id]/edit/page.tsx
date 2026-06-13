@@ -1,12 +1,13 @@
 "use client";
 
-import { use } from "react";
+import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import { useVocabularyEntry, updateVocabulary } from "@/hooks/useVocabulary";
-import type { VocabularyInput } from "@/lib/types";
+import { useVocabularyTopics } from "@/hooks/useVocabularyTopics";
+import type { VocabularyInput, VocabularyTopic } from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState, ErrorState } from "@/components/states";
 import { VocabularyForm, stateFromEntry } from "@/components/vocabulary-form";
@@ -19,6 +20,14 @@ export default function EditVocabularyPage({
   const { id } = use(params);
   const router = useRouter();
   const { data, loading, error, refetch } = useVocabularyEntry(id);
+
+  // v8 — topic options MUST language-match the entry (not user.language) to
+  // satisfy the backend's cross-language assignment rejection.
+  const { data: topicsData } = useVocabularyTopics(data?.language);
+  const [topics, setTopics] = useState<VocabularyTopic[]>([]);
+  useEffect(() => {
+    if (topicsData) setTopics(topicsData.items);
+  }, [topicsData]);
 
   async function handleSubmit(input: VocabularyInput) {
     await updateVocabulary(id, input);
@@ -64,6 +73,10 @@ export default function EditVocabularyPage({
           submitLabel="Lưu thay đổi"
           onSubmit={handleSubmit}
           showDictionary
+          topics={topics}
+          onTopicCreated={(t) =>
+            setTopics((cur) => [t, ...cur.filter((x) => x.id !== t.id)])
+          }
         />
       )}
     </div>

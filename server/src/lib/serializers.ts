@@ -7,6 +7,7 @@ import type {
   ReadingQuestion as PrismaReadingQuestion,
   ReadingAttempt as PrismaReadingAttempt,
   VocabularyEntry as PrismaVocabularyEntry,
+  VocabularyTopic as PrismaVocabularyTopic,
   EarnedBadge as PrismaEarnedBadge,
 } from "@prisma/client";
 import { toBadge } from "./gamification";
@@ -162,7 +163,22 @@ export function toVocabularyEntry(v: PrismaVocabularyEntry) {
     language: asLanguage(v.language),
     isFavorite: v.isFavorite,
     known: v.known,
+    // v8 — nullable FK to a per-user VocabularyTopic in the same language. Null = untagged.
+    vocabularyTopicId: v.vocabularyTopicId ?? null,
     createdAt: iso(v.createdAt),
     updatedAt: iso(v.updatedAt),
+  };
+}
+
+// v8 — VocabularyTopic response shape. color: null when unset; language: "en"|"zh".
+export function toVocabularyTopic(t: PrismaVocabularyTopic) {
+  return {
+    id: t.id,
+    userId: t.userId,
+    name: t.name,
+    color: t.color ?? null,
+    language: asLanguage(t.language),
+    createdAt: iso(t.createdAt),
+    updatedAt: iso(t.updatedAt),
   };
 }

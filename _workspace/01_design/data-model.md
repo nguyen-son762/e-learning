@@ -1,5 +1,8 @@
 # Data Model — Multi-Language Learning App (MVP)
 
+> **v8 (2026-06-13): + Personal Vocabulary Topics.**
+> Adds a new `VocabularyTopic` table — per-user, per-language labels users can attach to their vocabulary entries (think "folders"). Adds a nullable FK `vocabularyTopicId` to `VocabularyEntry`. Enforces `(userId, language, name)` uniqueness on the new table; delete = SET NULL on referencing entries (entries are NEVER deleted by a topic delete — only the link is cleared). No change to `Topic` (the v4 flashcard bucket), `Flashcard`, or `VocabularyEntry.tags[]`. Backfill: every existing `VocabularyEntry.vocabularyTopicId` is `NULL`; the `VocabularyTopic` table starts empty. See v8 DIFF at end.
+>
 > **v7 (2026-06-13): + Streak/XP gamification + Sentence Mining bucket.**
 > Adds three persisted gamification columns to `User` — `streak: Int @default(0)`, `lastStudiedAt: DateTime?`, `totalXP: Int @default(0)` — and introduces a new `EarnedBadge` table (one row per earned badge, `@@unique([userId, badgeId])`, never deleted). The wire-level `User.badges: Badge[]` is **derived** from this table per-request. No schema change on `Flashcard`/`FlashcardProgress` — XP/streak math is in the API layer; only the `User` row is mutated alongside the existing SRS update on `PUT /api/flashcards/:id/progress`. **Sentence mining** introduces a reserved slug `__mined__` per (userId, language) — auto-created on first `POST /api/vocabulary/mine` call. No new column on `Topic`; mining reuses the v6 `(slug, language)` composite unique. Backfill migration sets `streak=0, totalXP=0, lastStudiedAt=NULL` for all pre-v7 users and leaves `EarnedBadge` empty. See v7 DIFF at end.
 >
@@ -38,7 +41,7 @@ A learner account (or admin). Auth is email + password (bcrypt hash), JWT issued
 | createdAt | DateTime | default now() |
 | updatedAt | DateTime | @updatedAt |
 
-Relations: `flashcardProgress[]`, `readingAttempts[]`, `vocabularyEntries[]`, `topics[]` *(v4 — user-created topics owned by this user)*, `earnedBadges[]` *(v7 — see EarnedBadge below)*.
+Relations: `flashcardProgress[]`, `readingAttempts[]`, `vocabularyEntries[]`, `topics[]` *(v4 — user-created topics owned by this user)*, `earnedBadges[]` *(v7 — see EarnedBadge below)*, `vocabularyTopics[]` *(v8 — personal vocabulary topics owned by this user; see VocabularyTopic below)*.
 
 #### Role enum *(v5)*
 
@@ -241,6 +244,7 @@ A personal vocabulary item owned by a single user. Every entry is private to its
 | pinyin | String? | `pinyin` | *(v6)* Hanyu Pinyin with tone marks (e.g. `"nǐ hǎo"`); optional. MUST be `null` when `language === EN`. |
 | hskLevel | Int? | `hsk_level` | *(v6)* HSK level for Chinese vocabulary; if present must be an integer in `[1, 6]`. MUST be `null` when `language === EN`. |
 | language | Language | `language` | *(v6)* `EN` \| `ZH`; **non-null**, immutable after creation. Backfill `EN` for all pre-v6 rows. |
+| vocabularyTopicId | String? | `vocabulary_topic_id` | *(v8)* nullable FK → `VocabularyTopic.id`. **Null = untagged (default).** Must reference a topic where `userId = this.userId` AND `language = this.language` — enforced at the API layer (no DB-level cross-field check). Cascade: `ON DELETE SET NULL` (entry survives; tag is cleared). Backfill `NULL` for all pre-v8 rows. |
 | isFavorite | Boolean | `is_favorite` | star flag; **default false** |
 | known | Boolean | `known` | flashcard-study "thuộc" state; **default false** |
 | createdAt | DateTime | `created_at` | default now() |
@@ -252,6 +256,7 @@ Indexes:
 - `@@index([userId, createdAt])` — default list ordering (newest-first) scoped to owner.
 - `@@index([userId, word])` — optional; speeds word lookup/search and de-dup checks within a user's set.
 - `@@index([userId, language, createdAt])` *(v6)* — replaces the dominant query path: list owner's entries filtered by language, ordered newest-first. The pure `@@index([userId, createdAt])` stays for queries that don't filter by language (none in v6, but kept for forward-compat).
+- `@@index([userId, vocabularyTopicId])` *(v8)* — powers `GET /api/vocabulary?vocabularyTopicId=<id>` filtering. Also powers the `DELETE /api/vocabulary-topics/:id` SET NULL cascade scan (find every entry referencing the topic). The `userId` prefix keeps the scan scoped to the caller's rows.
 
 > Convention: model fields camelCase in Prisma schema, Postgres columns snake_case via `@map`/`@@map`. API serializes camelCase (see `api-contract.md`). `known` lives **directly on the entry** (not in a separate progress table) because a vocabulary entry already belongs to exactly one user — no per-user fan-out needed, unlike `Flashcard`/`FlashcardProgress`.
 
@@ -296,12 +301,46 @@ Semantics:
 
 ---
 
+### VocabularyTopic  *(v8 — Personal Vocabulary Topics)*
+A per-user, per-language label users can attach to their `VocabularyEntry` rows (think "folders"). Distinct from `Topic` (the v4 flashcard bucket) and from `VocabularyEntry.tags[]` (free-text labels). A first-class owned object with `id`/`color` for UI use.
+
+| Field | Type | DB `@map` | Notes |
+|-------|------|-----------|-------|
+| id | String (cuid) | `id` | PK |
+| userId | String | `user_id` | FK → User.id (owner). Cross-user access → `404 NOT_FOUND` (existence not leaked). |
+| name | String | `name` | Trimmed before storage; length 1–60; case preserved. |
+| color | String? | `color` | Optional hex `#RRGGBB` (six-digit, leading `#`). Nullable — null = frontend renders default chip color. |
+| language | Language | `language` | *(v8)* `EN` \| `ZH`; **non-null**, **immutable** after creation. Matches `Topic`/`VocabularyEntry` precedent. |
+| createdAt | DateTime | `created_at` | default now() |
+| updatedAt | DateTime | `updated_at` | @updatedAt |
+
+Relations:
+- `user` (User) — `userId` references `User.id`. `onDelete: Cascade` so deleting a user drops their topics (and the v8 SET NULL on the entries' FK handles the entry-side cleanup cleanly because the entry's parent user is also being deleted in the same cascade).
+- `entries` (VocabularyEntry[]) — inverse of the new `vocabularyTopicId` FK on entries. The relation uses `onDelete: SetNull` on the entry side so deleting the topic unlinks entries without deleting them.
+
+Constraints:
+- `@@unique([userId, language, name])` — naming uniqueness scoped per (user, language). Two users may both name a topic "Travel" in `en`; the same user may have an `en/Travel` AND a `zh/Travel`; the same user may NOT have two `en/Travel`. Collision on create/rename → `409 TOPIC_NAME_CONFLICT` at the API layer.
+
+Indexes:
+- `@@index([userId, language, name])` — implied by the unique above; powers `GET /api/vocabulary-topics?language=...` (filter by owner+language, order by name).
+- `@@index([userId])` — fallback lookups (e.g. "all my topics across both languages") if needed in future; cheap to keep alongside the unique.
+
+Semantics:
+- Each `VocabularyEntry` may reference AT MOST one `VocabularyTopic` via `vocabularyTopicId` (nullable); `null` = untagged.
+- An entry's `vocabularyTopicId` must point to a topic with the **same** `userId` AND **same** `language` as the entry. Cross-user / cross-language assignment is rejected at the API layer (no DB-level constraint — checked in the controller).
+- Renaming a topic does NOT touch entries — only the topic row's `name` changes. Frontend chips re-render on the next refetch.
+- Deleting a topic clears the FK on every referencing entry (SET NULL via Prisma relation `onDelete: SetNull`), then drops the topic row. The two steps run in a single transaction at the API layer for predictable ordering and for atomic visibility.
+
+> ASSUMPTION: a `VocabularyTopic` is purely an owner-side label. There is no sharing, no copy-on-clone, no "make this topic public" affordance in v8. If a user deletes their account, their topics are deleted via the `User → VocabularyTopic` cascade; their entries are deleted via the existing `User → VocabularyEntry` cascade.
+
+---
+
 ## Relationships (summary)
 
 ```
 User 1───* FlashcardProgress *───1 Flashcard *───1 Topic *───0..1 User    (v4 — owner; 0 = seeded)
 User 1───* ReadingAttempt    *───1 ReadingExercise 1───* ReadingQuestion
-User 1───* VocabularyEntry                                  (v2)
+User 1───* VocabularyEntry  *───0..1 VocabularyTopic *───1 User           (v8 — entry may be tagged with one of its owner's topics)
 ```
 
 - Topic 1—* Flashcard (a topic has many cards)
@@ -314,6 +353,8 @@ User 1───* VocabularyEntry                                  (v2)
 - User 1—* ReadingAttempt
 - User 1—* VocabularyEntry (a user owns many private vocabulary entries) *(v2)*
 - User 1—* EarnedBadge *(v7 — append-only badge log; one row per (user, badge))*
+- User 1—* VocabularyTopic *(v8 — owner of personal vocabulary topics; per-language unique by name)*
+- VocabularyTopic 1—* VocabularyEntry *(v8 — optional FK on entry; `onDelete: SetNull` so deleting a topic untags entries instead of dropping them)*
 
 ---
 
@@ -631,4 +672,125 @@ Single Prisma migration `2026_06_13_add_gamification`:
 - v3 SM-2 math (still 0–5 SM-2 internal; only the wire input changes to 0–3).
 - All existing endpoints' response status codes.
 - `Flashcard` shape (still language-derived).
+
+---
+
+## DIFF — v8 (Personal Vocabulary Topics)
+
+### New model — `VocabularyTopic`
+
+```prisma
+model VocabularyTopic {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  name      String
+  color     String?
+  language  Language
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entries VocabularyEntry[]
+
+  @@unique([userId, language, name])
+  @@index([userId])
+  @@map("vocabulary_topics")
+}
+```
+
+- `(userId, language, name)` is the uniqueness boundary. Two users may both have `en/Travel`; one user may have both `en/Travel` AND `zh/Travel`; one user may NOT have two `en/Travel`. Collision → API-layer `409 TOPIC_NAME_CONFLICT`.
+- `language` is `Language` (the v6 enum), non-null, immutable after create. Matches `Topic`/`VocabularyEntry` precedent.
+- `color` is a free-form string at the DB level; format validation `^#[0-9A-Fa-f]{6}$` happens at the API layer. Nullable.
+
+### Extended model — `VocabularyEntry` gains one nullable FK column
+
+| Column | Type | Default | Notes |
+|--------|------|---------|-------|
+| `vocabularyTopicId` (DB `vocabulary_topic_id`) | `String?` | `NULL` | nullable FK → `VocabularyTopic.id`. Prisma relation declares `onDelete: SetNull` so deleting a topic clears the FK on referencing entries (no entry data loss). Cross-user / cross-language assignment is rejected at the API layer (no DB check). Backfill `NULL` for all pre-v8 rows. |
+
+Prisma relation on the entry side:
+
+```prisma
+vocabularyTopicId String?         @map("vocabulary_topic_id")
+vocabularyTopic   VocabularyTopic? @relation(fields: [vocabularyTopicId], references: [id], onDelete: SetNull)
+```
+
+### New / extended indexes
+
+- New: `VocabularyTopic` table — `@@unique([userId, language, name])` + `@@index([userId])`.
+- Extended: `VocabularyEntry` adds `@@index([userId, vocabularyTopicId])` — powers the `?vocabularyTopicId=` filter on `GET /api/vocabulary` AND the SET NULL cascade scan on `DELETE /api/vocabulary-topics/:id`. The existing v6 `@@index([userId, language, createdAt])` stays as the dominant list path.
+
+### Unchanged models
+
+- `Topic` *(v4 flashcard bucket)* — NOT renamed, NOT extended. The v8 `VocabularyTopic` is a sibling model, not a rename of `Topic`. Backend MUST keep them in separate tables (`topics` vs `vocabulary_topics`).
+- `Flashcard`, `FlashcardProgress`, `ReadingExercise`, `ReadingQuestion`, `ReadingAttempt`, `User`, `EarnedBadge` — no column changes.
+- `VocabularyEntry.tags[]` — UNCHANGED. The new `vocabularyTopicId` is orthogonal; both filters coexist on `GET /api/vocabulary` and AND together. There is no server-side migration from tags to topics — users may use either, both, or neither.
+
+### Cascade / referential integrity summary
+
+| Action | Effect |
+|--------|--------|
+| `DELETE FROM User WHERE id = X` | Cascades to `VocabularyTopic.userId = X` (drops the topic rows) AND to `VocabularyEntry.userId = X` (drops the entry rows). Both rely on existing/new `onDelete: Cascade` relations on the `userId` FKs. |
+| `DELETE FROM VocabularyTopic WHERE id = T` | `VocabularyEntry.vocabularyTopicId = T` is SET NULL. Entries persist as untagged. API layer wraps the SET NULL + the DELETE in a single transaction for atomic visibility. |
+| Cross-language reassignment via `PUT /api/vocabulary/:id { vocabularyTopicId: <wrong-language topic> }` | API-layer rejection (`400 VALIDATION_ERROR`). NOT enforced at the DB — the controller compares `entry.language` against `topic.language` before writing. |
+| Cross-user assignment via the same path | API-layer rejection (`400 VALIDATION_ERROR` if topic owned by another user — also surfaces as `404` if the topic lookup itself returns null because of the existence-not-leaked rule; either is acceptable). |
+
+### Migration plan
+
+Single Prisma migration `2026_06_13_add_vocabulary_topics`:
+
+1. **Create `vocabulary_topics` table** with the schema above + the `(userId, language, name)` unique index + the `(userId)` secondary index.
+   ```sql
+   CREATE TABLE "vocabulary_topics" (
+     "id"         TEXT PRIMARY KEY,
+     "user_id"    TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+     "name"       TEXT NOT NULL,
+     "color"      TEXT,
+     "language"   "Language" NOT NULL,
+     "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+     "updated_at" TIMESTAMP NOT NULL DEFAULT now()
+   );
+   CREATE UNIQUE INDEX "vocabulary_topics_user_id_language_name_key" ON "vocabulary_topics"("user_id", "language", "name");
+   CREATE INDEX "vocabulary_topics_user_id_idx" ON "vocabulary_topics"("user_id");
+   ```
+2. **Add `vocabulary_topic_id` column** to `vocabulary_entries` (nullable, default `NULL`, no backfill needed):
+   ```sql
+   ALTER TABLE "vocabulary_entries"
+     ADD COLUMN "vocabulary_topic_id" TEXT
+     REFERENCES "vocabulary_topics"("id") ON DELETE SET NULL;
+   CREATE INDEX "vocabulary_entries_user_id_vocabulary_topic_id_idx"
+     ON "vocabulary_entries"("user_id", "vocabulary_topic_id");
+   ```
+3. The migration is forward-only. Rollback drops the new column + index + table; no data loss because no pre-v8 data references the new structures.
+
+### Validation rules summary (enforced at API layer)
+
+| Field | Rule |
+|-------|------|
+| `VocabularyTopic.name` | trimmed; length 1–60; non-empty after trim |
+| `VocabularyTopic.color` | optional; if provided, MUST match `^#[0-9A-Fa-f]{6}$` |
+| `VocabularyTopic.language` | `EN` \| `ZH`; immutable after create |
+| `VocabularyTopic` uniqueness | `(userId, language, name)` — DB-enforced; P2002 mapped to `409 TOPIC_NAME_CONFLICT` |
+| `VocabularyEntry.vocabularyTopicId` (write) | nullable; if non-null, MUST point to a topic with matching `userId` AND matching `language` — else `400 VALIDATION_ERROR` with `field: "vocabularyTopicId"` |
+| `POST /api/vocabulary/mine` body `vocabularyTopicId` | MUST NOT be present in the body — explicit reject with `400 VALIDATION_ERROR` |
+| `?vocabularyTopicId=` on `GET /api/vocabulary` | sentinel `"__none__"` → `IS NULL`; any other string → exact match; unknown id → empty list (no error) |
+
+### Backend implementation notes
+
+- The cross-field language check on `vocabularyTopicId` writes happens **after** the existing v6 language resolution for the entry — i.e. resolve the entry's stored language first, then lookup the topic, then compare. Don't trust a client-supplied `language` on a PUT path; the entry's stored language is the SSOT.
+- `DELETE /api/vocabulary-topics/:id` runs `UPDATE entries SET vocabulary_topic_id = NULL WHERE user_id = $1 AND vocabulary_topic_id = $2; DELETE FROM vocabulary_topics WHERE id = $2 AND user_id = $1;` inside one Prisma `$transaction`. The `user_id = $1` filter on both statements is defensive — the relation's `onDelete: SetNull` would also handle the first statement implicitly, but the explicit SQL is cheaper at small volumes and avoids hidden latency from Prisma's relation cleanup.
+- The `(userId, vocabularyTopicId)` index makes the SET NULL scan an indexed range read — for a user with thousands of entries and dozens of topics, this is the right shape.
+- For `GET /api/vocabulary?vocabularyTopicId=__none__`, the WHERE clause is `vocabulary_topic_id IS NULL AND user_id = $1 AND language = $resolvedLanguage` — the existing `(userId, language, createdAt)` index still dominates the scan; the `IS NULL` filter applies after.
+- The `name` trim happens BEFORE the uniqueness check; storing `"IELTS "` and `"IELTS"` as duplicates is a UX papercut — both normalize to `"IELTS"` and collide cleanly.
+
+### What does NOT change
+
+- v7 SRS / XP / streak / badges / sentence mining — completely orthogonal.
+- v7 mined-topic (`Topic` slug `__mined__`) — still a `Topic`, NOT a `VocabularyTopic`. Mining does NOT auto-assign a `VocabularyTopic` to the mined entry.
+- v6 multi-language gating, slug-collision rules, language enum.
+- v5 admin role + reading CRUD.
+- v4 ownership semantics for `Topic`/`Flashcard`.
+- v3 SM-2 math.
+- `VocabularyEntry.tags[]` — still an independent free-text array.
+- All existing endpoints' response status codes (other than the new `409 TOPIC_NAME_CONFLICT`).
 

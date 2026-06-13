@@ -10,6 +10,7 @@ import flashcardRoutes from "./routes/flashcardRoutes";
 import dashboardRoutes from "./routes/dashboardRoutes";
 import readingRoutes from "./routes/readingRoutes";
 import vocabularyRoutes from "./routes/vocabularyRoutes";
+import vocabularyTopicRoutes from "./routes/vocabularyTopicRoutes";
 
 export function createApp() {
   const app = express();
@@ -33,6 +34,7 @@ export function createApp() {
   app.use("/api/dashboard", dashboardRoutes);
   app.use("/api/reading-exercises", readingRoutes);
   app.use("/api/vocabulary", vocabularyRoutes);
+  app.use("/api/vocabulary-topics", vocabularyTopicRoutes);
 
   // 404 + error handling.
   app.use(notFoundHandler);

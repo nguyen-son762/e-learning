@@ -1,5 +1,7 @@
 # Route Map — Multi-Language Learning App (MVP)
 
+> **v8 (2026-06-13): + Personal Vocabulary Topics.** New route `/vocabulary/topics` (inside the `(app)` shell — manage the caller's `VocabularyTopic` collection: list, create, rename, recolor, delete). Existing `/vocabulary` route gains a topic filter chip strip + dropdown, threading `?vocabularyTopicId=<id|__none__>` into `GET /api/vocabulary`. `/vocabulary/new` and `/vocabulary/[id]/edit` gain a topic select (Combobox / Select) populated by `GET /api/vocabulary-topics?language=<current>`, with an inline "+ Tạo chủ đề" affordance that fires `POST /api/vocabulary-topics`. TopNav adds a "Chủ đề từ vựng" entry (under the existing "Từ vựng của tôi" group). Frontend MUST distinguish `VocabularyTopic` from `Topic` (flashcard bucket) in all UI labels — proposed Vietnamese strings: "Chủ đề từ vựng" (VocabularyTopic) vs "Bộ flashcard" (Topic). See v8 DIFF at end.
+>
 > **v6 (2026-06-13): + Chinese Learning Module (multi-language).** New route `/choose-language` (inside the `(app)` shell). The `(app)` layout guard now branches on `user.language`: `null` → redirect `/choose-language`; otherwise let the user through. TopNav grows a language switcher (DropdownMenu) showing the current language and offering to swap. All content routes (`/dashboard`, `/topics*`, `/reading*`, `/vocabulary*`) auto-scope to the user's current language — they pass `?language=<user.language>` to their list endpoints by default. The Chinese flashcard UI lives at the same `/topics/[slug]` route (no new route) — the page branches on `topic.language` in its render. Same for `/reading/[slug]`, `/vocabulary/new`, `/vocabulary/[id]/edit`. Admin reading routes (`/admin/reading*`) gain a language column + filter (`?language=all` allowed). UI language stays Vietnamese throughout. See v6 DIFF at end.
 >
 > **v2 (2026-06-09): + My Vocabulary feature** — added `/vocabulary`, `/vocabulary/new`, `/vocabulary/[id]/edit`, `/vocabulary/study`; new TopNav item "Từ vựng của tôi". Dictionary auto-fill + TTS are CLIENT-ONLY. See DIFF at end.
@@ -27,10 +29,11 @@ Conventions:
 | `/reading` | `app/(app)/reading/page.tsx` | Danh sách bài tập reading scoped to current language (kèm best score) | exercise list + my best scores | `GET /api/reading-exercises?language=<user.language>` |
 | `/reading/[slug]` | `app/(app)/reading/[slug]/page.tsx` | Làm bài reading: đọc passage, chọn đáp án, nộp, xem điểm + review. *(v6)* Page branches on `exercise.language`: passage container uses `lang="en"` vs `lang="zh-CN"` (helps TTS, screen-readers, font hinting). | exercise detail (passage + questions, no answers) | `GET /api/reading-exercises/:slug`, `POST /api/reading-exercises/:slug/attempts` |
 | `/reading/[slug]/history` | `app/(app)/reading/[slug]/history/page.tsx` | Lịch sử các lần làm của bài reading | attempts list for exercise | `GET /api/reading-exercises/:slug/attempts` |
-| `/vocabulary` | `app/(app)/vocabulary/page.tsx` | Danh sách từ vựng cá nhân scoped to current language: search (word/meaning, *(v6)* + pinyin for `zh`), lọc tag/partOfSpeech/favorite/cefrLevel/hskLevel *(v6)*, sort; nút "+ Thêm từ", nút loa TTS mỗi từ (`en-US`/`zh-CN`), toggle ⭐, link sửa, nút xoá. *(v6)* HSK badge component renders when entry has `hskLevel`. | entry list + my tags for filter dropdown | `GET /api/vocabulary?language=<user.language>`, `GET /api/vocabulary/tags?language=<user.language>`, `PUT /api/vocabulary/:id/favorite`, `DELETE /api/vocabulary/:id` |
-| `/vocabulary/new` | `app/(app)/vocabulary/new/page.tsx` | Form thêm từ mới. *(v6)* Page branches on `user.language`: English form (CEFR + dictionary auto-fill) vs Chinese form (pinyin input + HSK 1–6 select; no dictionary auto-fill — out of scope). Nút **"Tự điền từ điển"** chỉ hiển thị khi `user.language === "en"`. | none read; writes one entry | `POST /api/vocabulary` (body includes `language: <user.language>`) |
-| `/vocabulary/[id]/edit` | `app/(app)/vocabulary/[id]/edit/page.tsx` | Form sửa từ. Tải entry để pre-fill, lưu cập nhật. *(v6)* Branches on `entry.language` (NOT `user.language` — the entry's language is immutable, so editing a `zh` entry while currently studying `en` is still allowed and shows the Chinese form). | single entry to edit | `GET /api/vocabulary/:id`, `PUT /api/vocabulary/:id` |
-| `/vocabulary/study` | `app/(app)/vocabulary/study/page.tsx` | Học bộ từ cá nhân kiểu flashcard scoped to current language (reuse UX flashcard): front=word, back=meaning+example, mark thuộc/chưa thuộc, auto-advance, TTS. *(v6)* Chinese variant uses Hán tự front + pinyin/meaning back + `zh-CN` TTS. | my full entry set (study deck) | `GET /api/vocabulary?language=<user.language>`, `PUT /api/vocabulary/:id/progress` |
+| `/vocabulary` | `app/(app)/vocabulary/page.tsx` | Danh sách từ vựng cá nhân scoped to current language: search (word/meaning, *(v6)* + pinyin for `zh`), lọc tag/partOfSpeech/favorite/cefrLevel/hskLevel *(v6)*, **lọc chủ đề từ vựng (`vocabularyTopicId`) *(v8)*** — chip strip "Tất cả · Chưa gắn · <Topic.name>…" populated from `GET /api/vocabulary-topics`; selecting "Chưa gắn" sends `?vocabularyTopicId=__none__`. Sort; nút "+ Thêm từ"; nút "Quản lý chủ đề" → `/vocabulary/topics` *(v8)*; nút loa TTS mỗi từ (`en-US`/`zh-CN`), toggle ⭐, link sửa, nút xoá. *(v6)* HSK badge component renders when entry has `hskLevel`. *(v8)* Per-entry chip renders `entry.vocabularyTopic.name` with `color` tint when set (the frontend joins the topic on the cached topics list, NOT a backend join). | entry list + my tags for filter dropdown + my topics for the chip filter | `GET /api/vocabulary?language=<L>&vocabularyTopicId=<id|__none__>`, `GET /api/vocabulary/tags?language=<L>`, `GET /api/vocabulary-topics?language=<L>` *(v8)*, `PUT /api/vocabulary/:id/favorite`, `DELETE /api/vocabulary/:id` |
+| `/vocabulary/topics` *(v8)* | `app/(app)/vocabulary/topics/page.tsx` | Quản lý chủ đề từ vựng (scoped to current language). Danh sách topics dưới dạng card lưới (tên + color chip + count "N từ"). Nút "+ Tạo chủ đề" → Dialog với `name` (Input) + `color` (color picker, optional). Inline rename trên mỗi card (click tên → Input). Color picker trên mỗi card. Nút xoá hiện AlertDialog cảnh báo "N từ vựng sẽ bị bỏ gắn (không bị xoá). Tiếp tục?". Bấm card → điều hướng `/vocabulary?vocabularyTopicId=<id>` để xem entries của topic đó. 409 `TOPIC_NAME_CONFLICT` → toast tiếng Việt "Bạn đã có chủ đề tên '<name>' trong tiếng <L>." | my topics + counts (count derived client-side from `GET /api/vocabulary?vocabularyTopicId=<id>` aggregated per chip, OR by issuing one `GET /api/vocabulary?language=<L>` and bucketing client-side) | `GET /api/vocabulary-topics?language=<L>`, `POST /api/vocabulary-topics`, `PATCH /api/vocabulary-topics/:id`, `DELETE /api/vocabulary-topics/:id`, `GET /api/vocabulary?language=<L>` (for count bucketing — single call, client groups by `vocabularyTopicId`) |
+| `/vocabulary/new` | `app/(app)/vocabulary/new/page.tsx` | Form thêm từ mới. *(v6)* Page branches on `user.language`: English form (CEFR + dictionary auto-fill) vs Chinese form (pinyin input + HSK 1–6 select; no dictionary auto-fill — out of scope). Nút **"Tự điền từ điển"** chỉ hiển thị khi `user.language === "en"`. *(v8)* Adds a "Chủ đề từ vựng" select (Combobox or Select) populated from `GET /api/vocabulary-topics?language=<user.language>` — default placeholder "Chưa gắn"; inline footer "+ Tạo chủ đề mới" opens the same Dialog as `/vocabulary/topics` (fires `POST /api/vocabulary-topics`, on 201 prepends to the cached topic list and auto-selects). Submitted as body `vocabularyTopicId: <selectedId> \| null`. | topic list for the select | `POST /api/vocabulary` (body includes `language: <user.language>`, **`vocabularyTopicId?: string \| null` *(v8)***), `GET /api/vocabulary-topics?language=<L>` *(v8)*, `POST /api/vocabulary-topics` *(v8 — inline create)* |
+| `/vocabulary/[id]/edit` | `app/(app)/vocabulary/[id]/edit/page.tsx` | Form sửa từ. Tải entry để pre-fill, lưu cập nhật. *(v6)* Branches on `entry.language` (NOT `user.language` — the entry's language is immutable, so editing a `zh` entry while currently studying `en` is still allowed and shows the Chinese form). *(v8)* Same "Chủ đề từ vựng" select as `/vocabulary/new`, but populated from `GET /api/vocabulary-topics?language=<entry.language>` (NOT `user.language` — topic options MUST match the entry's stored language to avoid the cross-language assignment rejection at PUT time). Initial value pre-filled from `entry.vocabularyTopicId`. Empty selection → submits `vocabularyTopicId: null` (clears the tag). | single entry to edit + topic list for the select | `GET /api/vocabulary/:id`, `PUT /api/vocabulary/:id` (body may include `vocabularyTopicId` *(v8)*), `GET /api/vocabulary-topics?language=<entry.language>` *(v8)*, `POST /api/vocabulary-topics` *(v8 — inline create)* |
+| `/vocabulary/study` | `app/(app)/vocabulary/study/page.tsx` | Học bộ từ cá nhân kiểu flashcard scoped to current language (reuse UX flashcard): front=word, back=meaning+example, mark thuộc/chưa thuộc, auto-advance, TTS. *(v6)* Chinese variant uses Hán tự front + pinyin/meaning back + `zh-CN` TTS. *(v8)* If arriving via `?vocabularyTopicId=<id>` (deep-link from `/vocabulary` chip), the deck is also scoped by topic — same query param threaded into the underlying `GET /api/vocabulary`. | my full entry set (study deck) — optionally scoped by topic | `GET /api/vocabulary?language=<L>&vocabularyTopicId=<id|__none__>` *(v8 — optional)*, `PUT /api/vocabulary/:id/progress` |
 
 ---
 
@@ -80,6 +83,10 @@ These run entirely in the browser and never call the Express backend. They are i
 - `PUT /api/vocabulary/:id/favorite` ✓ *(v2)*
 - `PUT /api/vocabulary/:id/progress` ✓ *(v2)*
 - `GET /api/vocabulary/tags` ✓ *(v2)*
+- `GET /api/vocabulary-topics` ✓ *(v8)*
+- `POST /api/vocabulary-topics` ✓ *(v8)*
+- `PATCH /api/vocabulary-topics/:id` ✓ *(v8)*
+- `DELETE /api/vocabulary-topics/:id` ✓ *(v8)*
 
 No orphan routes, no orphan endpoints. Every contract endpoint below names a consuming screen.
 
@@ -194,3 +201,58 @@ A single `useCurrentLanguage()` hook reads `user.language` from the cached `/api
 ### No orphans
 
 The new `/choose-language` route consumes 2 existing/new endpoints (`GET /api/auth/me`, `PUT /api/users/me/language`). The new `PUT /api/users/me/language` endpoint has exactly one screen consumer: `/choose-language` (plus the TopNav switcher, which is part of the `(app)` layout — not a route, so it's tracked in this DIFF rather than the route table).
+
+---
+
+## DIFF — v8 (Personal Vocabulary Topics)
+
+### 1 new route (inside the authed `(app)` shell)
+
+| URL | File | Endpoints |
+|-----|------|-----------|
+| `/vocabulary/topics` | `app/(app)/vocabulary/topics/page.tsx` | `GET /api/vocabulary-topics`, `POST /api/vocabulary-topics`, `PATCH /api/vocabulary-topics/:id`, `DELETE /api/vocabulary-topics/:id`, `GET /api/vocabulary` (for per-topic counts — single call, client groups by `vocabularyTopicId`) |
+
+### Modified existing routes
+
+| Route | What changes |
+|-------|--------------|
+| `/vocabulary` | Adds a topic filter chip strip ("Tất cả · Chưa gắn · <topic.name>…") threading `?vocabularyTopicId=<id\|__none__>`. Adds a "Quản lý chủ đề" button → `/vocabulary/topics`. Each entry row renders an optional topic chip (name + color tint) when `entry.vocabularyTopicId` is set. New endpoint dependency: `GET /api/vocabulary-topics`. |
+| `/vocabulary/new` | Adds a "Chủ đề từ vựng" select populated from `GET /api/vocabulary-topics?language=<user.language>`. Inline "+ Tạo chủ đề mới" fires `POST /api/vocabulary-topics`. Submits `POST /api/vocabulary` with optional `vocabularyTopicId`. |
+| `/vocabulary/[id]/edit` | Same topic select as `/vocabulary/new`, but scoped to `entry.language` (NOT `user.language` — entry's language is immutable, and the topic must match it). Pre-filled from `entry.vocabularyTopicId`. Empty = clears the tag on PUT. |
+| `/vocabulary/study` | Now respects an optional `?vocabularyTopicId=<id>` query param for deep-linking from the `/vocabulary` chip. Threads it into the underlying `GET /api/vocabulary`. |
+
+### TopNav
+
+`app/(app)/layout.tsx` TopNav nav grows a "Chủ đề từ vựng" link **inside** the existing "Từ vựng của tôi" group (mobile: same group inside the hamburger Sheet). Link points to `/vocabulary/topics`. On desktop, this can be a sub-item under a dropdown trigger labelled "Từ vựng của tôi" with children: "Danh sách" (`/vocabulary`), "Chủ đề" (`/vocabulary/topics`), "Học flashcard" (`/vocabulary/study`).
+
+### Vietnamese vocabulary distinguishing v8's `VocabularyTopic` from v4's `Topic`
+
+Frontend MUST use distinct UI strings to keep the two concepts visible to the user:
+
+| Concept | Vietnamese label | Where rendered |
+|---------|-----------------|----------------|
+| `Topic` (v4 — flashcard bucket) | "Bộ flashcard" or "Bộ từ" | `/topics`, `/topics/*`, dashboard "Bộ flashcard của tôi" |
+| `VocabularyTopic` (v8 — vocabulary label) | "Chủ đề từ vựng" | `/vocabulary*` routes, "Quản lý chủ đề" button, chip filter, form select |
+
+Avoid using the bare word "Topic" / "Chủ đề" alone in any v8 UI — always qualify as "Chủ đề từ vựng" to prevent confusion with the existing flashcard buckets.
+
+### Client-only integrations (updated for v8)
+
+No new client-only integrations. The topic color picker is a pure form input — colors are stored on the backend as hex strings; no third-party calls.
+
+### No orphans
+
+- The new `/vocabulary/topics` route consumes all 4 new v8 endpoints. Every new endpoint has a consumer:
+  - `GET /api/vocabulary-topics` → `/vocabulary/topics`, `/vocabulary`, `/vocabulary/new`, `/vocabulary/[id]/edit`.
+  - `POST /api/vocabulary-topics` → `/vocabulary/topics`, `/vocabulary/new` (inline create), `/vocabulary/[id]/edit` (inline create).
+  - `PATCH /api/vocabulary-topics/:id` → `/vocabulary/topics`.
+  - `DELETE /api/vocabulary-topics/:id` → `/vocabulary/topics`.
+- `GET /api/vocabulary` gains a new query param `vocabularyTopicId` — consumed by `/vocabulary` (chip filter), `/vocabulary/study` (optional deep link), and indirectly by `/vocabulary/topics` (counts).
+- `POST /api/vocabulary` and `PUT /api/vocabulary/:id` body gain optional `vocabularyTopicId` — consumed by `/vocabulary/new` and `/vocabulary/[id]/edit` respectively.
+
+### Frontend data-layer notes
+
+- TanStack Query keys for the v8 endpoints: `["vocabulary-topics", language]` for the list (per-language cache so language switch invalidates cleanly). `["vocabulary", { language, search, tag, vocabularyTopicId, ... }]` for the entry list (existing key extended with the new filter param).
+- On language switch (TopNav switcher from v6): invalidate both `["vocabulary-topics", *]` AND `["vocabulary", *]` keys — topics are language-scoped, and a stale topic list from the previous language must not appear in the post-switch select.
+- After `POST /api/vocabulary-topics` (inline create from a form), optimistically prepend the returned `item` to the cached topic list under the current language key AND auto-select it in the parent form. The 409 path needs special handling — surface the toast and keep the dialog open with the name still typed in so the user can rename.
+- After `DELETE /api/vocabulary-topics/:id`, invalidate the `["vocabulary", *]` list so the entries that just lost their tag re-fetch with `vocabularyTopicId: null`. Alternatively, the frontend MAY patch the cache locally for instant UI (set `vocabularyTopicId: null` on every cached entry that referenced the deleted topic), then revalidate in the background.

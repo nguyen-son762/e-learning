@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
   Plus,
@@ -11,6 +12,7 @@ import {
   Volume2,
   Pencil,
   Trash2,
+  FolderTree,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -19,8 +21,11 @@ import {
   setVocabularyFavorite,
   deleteVocabulary,
 } from "@/hooks/useVocabulary";
+import { useVocabularyTopics } from "@/hooks/useVocabularyTopics";
 import { PARTS_OF_SPEECH } from "@/components/vocabulary-form";
 import type { VocabularyEntry, VocabularyListParams } from "@/lib/types";
+import { VOCABULARY_TOPIC_NONE } from "@/lib/types";
+import { useAuthContext } from "@/components/auth-context";
 import { ApiError } from "@/lib/api";
 import { speak, isTtsSupported } from "@/lib/tts";
 import { HanziText } from "@/components/hanzi-text";
@@ -68,6 +73,9 @@ const SORTS: { value: NonNullable<VocabularyListParams["sort"]>; label: string }
 
 export default function VocabularyListPage() {
   const ttsOk = isTtsSupported();
+  const { user } = useAuthContext();
+  const language = user.language ?? "en";
+  const searchParams = useSearchParams();
 
   // Filter/sort state → query params.
   const [search, setSearch] = useState("");
@@ -77,6 +85,15 @@ export default function VocabularyListPage() {
   const [sort, setSort] = useState<NonNullable<VocabularyListParams["sort"]>>(
     "newest",
   );
+  // v8 — topic filter. "" = All (no filter). `__none__` = untagged. Otherwise topic id.
+  const [vocabularyTopicId, setVocabularyTopicId] = useState<string>("");
+
+  // v8 — initial seed from `?vocabularyTopicId=<id|__none__>` deep-link
+  // (e.g. clicking a card on /vocabulary/topics or the manage button).
+  useEffect(() => {
+    const v = searchParams.get("vocabularyTopicId");
+    if (v) setVocabularyTopicId(v);
+  }, [searchParams]);
 
   const params: VocabularyListParams = useMemo(
     () => ({
@@ -85,12 +102,21 @@ export default function VocabularyListPage() {
       partOfSpeech: partOfSpeech || undefined,
       favorite: favoriteOnly ? "true" : undefined,
       sort,
+      vocabularyTopicId: vocabularyTopicId || undefined,
     }),
-    [search, tag, partOfSpeech, favoriteOnly, sort],
+    [search, tag, partOfSpeech, favoriteOnly, sort, vocabularyTopicId],
   );
 
   const { data, loading, error, refetch } = useVocabulary(params);
   const { data: tagsData } = useVocabularyTags();
+  // v8 — topics for chip strip + per-entry chip lookup. Language-scoped.
+  const { data: topicsData } = useVocabularyTopics(language);
+  const topics = useMemo(() => topicsData?.items ?? [], [topicsData]);
+  const topicById = useMemo(() => {
+    const m = new Map<string, (typeof topics)[number]>();
+    for (const t of topics) m.set(t.id, t);
+    return m;
+  }, [topics]);
 
   // Local optimistic copy so favorite-toggle / delete reflect immediately.
   const items = data?.items ?? [];
@@ -144,7 +170,13 @@ export default function VocabularyListPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-3xl font-bold">Từ vựng của tôi</h1>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline">
+            <Link href="/vocabulary/topics">
+              <FolderTree className="h-4 w-4" />
+              Quản lý chủ đề
+            </Link>
+          </Button>
           <Button asChild variant="outline">
             <Link href="/vocabulary/study">
               <GraduationCap className="h-4 w-4" />
@@ -158,6 +190,53 @@ export default function VocabularyListPage() {
             </Link>
           </Button>
         </div>
+      </div>
+
+      {/* v8 — Chủ đề từ vựng chip strip: "Tất cả · Chưa gắn · <names>…". */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant={vocabularyTopicId === "" ? "default" : "outline"}
+          size="sm"
+          onClick={() => setVocabularyTopicId("")}
+          aria-pressed={vocabularyTopicId === ""}
+        >
+          Tất cả
+        </Button>
+        <Button
+          type="button"
+          variant={
+            vocabularyTopicId === VOCABULARY_TOPIC_NONE ? "default" : "outline"
+          }
+          size="sm"
+          onClick={() => setVocabularyTopicId(VOCABULARY_TOPIC_NONE)}
+          aria-pressed={vocabularyTopicId === VOCABULARY_TOPIC_NONE}
+        >
+          Chưa gắn
+        </Button>
+        {topics.map((t) => {
+          const active = vocabularyTopicId === t.id;
+          return (
+            <Button
+              key={t.id}
+              type="button"
+              variant={active ? "default" : "outline"}
+              size="sm"
+              onClick={() => setVocabularyTopicId(t.id)}
+              aria-pressed={active}
+              className="gap-1.5"
+            >
+              {t.color && (
+                <span
+                  aria-hidden
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ backgroundColor: t.color }}
+                />
+              )}
+              {t.name}
+            </Button>
+          );
+        })}
       </div>
 
       {/* Filters */}
@@ -302,6 +381,36 @@ export default function VocabularyListPage() {
                         {entry.language === "zh" && entry.hskLevel != null && (
                           <HskBadge level={entry.hskLevel as HskLevel} />
                         )}
+                        {/* v8 — vocab topic chip (joined client-side from cached topic list). */}
+                        {(() => {
+                          const topic = entry.vocabularyTopicId
+                            ? topicById.get(entry.vocabularyTopicId)
+                            : null;
+                          if (!topic) return null;
+                          return (
+                            <Badge
+                              variant="outline"
+                              className="gap-1.5 text-xs"
+                              style={
+                                topic.color
+                                  ? {
+                                      borderColor: topic.color,
+                                      color: topic.color,
+                                    }
+                                  : undefined
+                              }
+                            >
+                              {topic.color && (
+                                <span
+                                  aria-hidden
+                                  className="inline-block h-1.5 w-1.5 rounded-full"
+                                  style={{ backgroundColor: topic.color }}
+                                />
+                              )}
+                              {topic.name}
+                            </Badge>
+                          );
+                        })()}
                       </div>
                       {/* v7 — mined entries land with empty meaning; surface a CTA. */}
                       {entry.meaning === "" ? (

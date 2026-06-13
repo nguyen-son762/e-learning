@@ -27,8 +27,17 @@ import {
 import { LanguageSwitcher } from "@/components/language-switcher";
 
 
-function isActive(pathname: string, href: string): boolean {
-  return pathname === href || pathname.startsWith(href + "/");
+function isActive(pathname: string, href: string, allHrefs: string[]): boolean {
+  // Pick the most specific link only — prevents `/vocabulary` from lighting up
+  // when the user is on `/vocabulary/topics` (which has its own entry).
+  const match = pathname === href || pathname.startsWith(href + "/");
+  if (!match) return false;
+  return !allHrefs.some(
+    (other) =>
+      other !== href &&
+      other.startsWith(href + (href.endsWith("/") ? "" : "/")) &&
+      (pathname === other || pathname.startsWith(other + "/")),
+  );
 }
 
 function ThemeToggle() {
@@ -69,6 +78,9 @@ export function TopNav({
     { href: "/topics", label: "Flashcard" },
     { href: "/reading", label: "Reading" },
     { href: "/vocabulary", label: "Từ vựng của tôi" },
+    // v8 — Personal Vocabulary Topics manage page. "Chủ đề từ vựng" disambiguates
+    // from "Bộ flashcard" (which is the v4 Topic served at /topics).
+    { href: "/vocabulary/topics", label: "Chủ đề từ vựng" },
     ...(user.role === "ADMIN" ? [{ href: "/admin/reading", label: "Quản trị" }] : []),
   ];
 
@@ -110,7 +122,7 @@ export function TopNav({
                     onClick={() => setOpen(false)}
                     className={cn(
                       "rounded-lg px-3 py-2 text-sm font-medium hover:bg-[var(--secondary)]",
-                      isActive(pathname, l.href)
+                      isActive(pathname, l.href, links.map((x) => x.href))
                         ? "bg-[var(--secondary)] text-[var(--primary)]"
                         : "text-[var(--foreground)]",
                     )}
@@ -137,7 +149,7 @@ export function TopNav({
                 href={l.href}
                 className={cn(
                   "rounded-lg px-3 py-2 text-sm font-medium transition-colors hover:bg-[var(--secondary)]",
-                  isActive(pathname, l.href)
+                  isActive(pathname, l.href, links.map((x) => x.href))
                     ? "text-[var(--primary)]"
                     : "text-[var(--muted-foreground)]",
                 )}

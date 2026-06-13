@@ -39,6 +39,7 @@ model User {
   vocabularyEntries VocabularyEntry[]
   createdTopics     Topic[]
   earnedBadges      EarnedBadge[]
+  vocabularyTopics  VocabularyTopic[]
 
   @@map("users")
 }
@@ -191,13 +192,36 @@ model VocabularyEntry {
   language        String   @default("en")
   isFavorite      Boolean  @default(false) @map("is_favorite")
   known           Boolean  @default(false)
+  // v8 — optional FK to a per-user VocabularyTopic in the same language. Null = untagged.
+  vocabularyTopicId String? @map("vocabulary_topic_id")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vocabularyTopic VocabularyTopic? @relation(fields: [vocabularyTopicId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt])
   @@index([userId, word])
   @@index([userId, language])
+  @@index([userId, vocabularyTopicId])
   @@map("vocabulary_entries")
+}
+
+// v8 — Personal Vocabulary Topics. Per-user, per-language labels for vocab entries.
+// Distinct from Topic (v4 flashcard bucket) and VocabularyEntry.tags[] (free-text labels).
+model VocabularyTopic {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  name      String
+  color     String?
+  language  String   @default("en")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entries VocabularyEntry[]
+
+  @@unique([userId, language, name])
+  @@index([userId, language])
+  @@map("vocabulary_topics")
 }

@@ -1,5 +1,22 @@
 # API Contract — Multi-Language Learning App (MVP)
 
+> **v8 (2026-06-13): + Personal Vocabulary Topics.**
+> - **New shape `VocabularyTopic`:** `{ id: string, userId: string, name: string, color: string | null, language: Language, createdAt: string, updatedAt: string }` — a per-user, per-language label users can attach to their vocabulary entries (think "Folders for my vocab"). Separate from `Topic` (which is the seeded-or-user-created flashcard-bucket from v4) and separate from Flashcard's `Topic` — those are NOT touched by v8. Also distinct from `VocabularyEntry.tags[]` (free-text labels, kept as-is) — a `VocabularyTopic` is a first-class owned object with `id`/`color` for UI use.
+> - **`VocabularyEntry` shape gains `vocabularyTopicId: string | null`** — optional FK to a `VocabularyTopic` owned by the same user, in the **same `language`**. `null` = untagged (the default; existing rows backfill to `null`). Cross-user assignment is rejected; cross-language assignment is rejected.
+> - **4 new endpoints** (all `Bearer` auth, owner-scoped, camelCase wire, list wrapper on list):
+>   - `GET    /api/vocabulary-topics?language=en|zh` → `200 { items: VocabularyTopic[], total: number }`
+>   - `POST   /api/vocabulary-topics` body `{ name, color?, language? }` → `201 { item: VocabularyTopic }`
+>   - `PATCH  /api/vocabulary-topics/:id` body `{ name?, color? }` → `200 { item: VocabularyTopic }`
+>   - `DELETE /api/vocabulary-topics/:id` → `200 { id: string }` (parseable body, matches the rest of the API)
+> - **`GET /api/vocabulary` gains `?vocabularyTopicId=<id|__none__>`** to filter the list. Special sentinel `"__none__"` → entries with `vocabularyTopicId IS NULL` (untagged). Absent param → no filter. Any non-`__none__` value MUST be a valid topic id owned by the caller and matching the resolved language; otherwise the result is empty (no error — same lenient behavior as the existing `?tag` filter).
+> - **`POST /api/vocabulary` body gains optional `vocabularyTopicId: string | null`.** If non-null, server validates ownership AND language match (else `400 VALIDATION_ERROR` with `code: "VALIDATION_ERROR"` + machine-readable `field: "vocabularyTopicId"`). Default = `null` (untagged).
+> - **`PUT /api/vocabulary/:id` body also accepts `vocabularyTopicId: string | null`** — same validation; explicit `null` clears the tag. Omitting the field leaves it untouched (same patch-style as the other fields on this PUT).
+> - **`POST /api/vocabulary/mine` does NOT accept `vocabularyTopicId`** — mining always inserts with `vocabularyTopicId = null`. Rationale: the mined-topic (`__mined__`) is a `Topic` (v7 sentence mining bucket), NOT a `VocabularyTopic` — keeping mining independent of personal vocabulary topics avoids semantic collision and lets users tag the mined entry later via PUT.
+> - **Delete cascade:** `DELETE /api/vocabulary-topics/:id` **SETs NULL** on every `VocabularyEntry` owned by the caller whose `vocabularyTopicId` referenced the deleted topic. Entries are NEVER deleted by a topic delete.
+> - **Naming uniqueness:** `(userId, language, name)` is unique (case-sensitive, trimmed). Collisions on create OR rename → `409 CONFLICT` with `code: "TOPIC_NAME_CONFLICT"`.
+> - **Flashcard's `Topic` (v4) and `VocabularyEntry.tags[]` are NOT changed by v8.** `VocabularyTopic` is purely additive — orthogonal to both.
+> - Same conventions (camelCase, `{ items, total }` list wrapper, `{ error: { code, message } }`, Bearer auth, language gating from v6, single-item responses wrap in `{ item }` matching the v7 `/mine` precedent). See v8 DIFF at end.
+>
 > **v7 (2026-06-13): + SRS 4-button rating, Streak & XP gamification, Sentence Mining.**
 > - **Feature A — SRS 4-button rating (enhancement to v3 `PUT /api/flashcards/:id/progress`).** The wire `quality` field is **redefined** as a 4-value enum `0 | 1 | 2 | 3` meaning **Again=0, Hard=1, Good=2, Easy=3** (NOT raw SM-2 0–5 anymore). The backend maps these into SM-2 internal quality on the way in: `Again→0, Hard→3, Good→4, Easy→5`. `quality` stays **optional** (default = `2` Good, equivalent to SM-2 `4` — was `3` in v3). This is a **wire-shape breaking change for clients that previously sent quality=4 or 5**; all v6 frontends are migrated in lockstep with v7. The response gains two additive fields: `xpEarned: number` and `newStreak: number`.
 > - **Feature B — Streak & XP gamification (NEW).** `User` gains three persisted fields: `streak: number` (consecutive-day study streak, integer ≥ 0), `lastStudiedAt: string | null` (ISO 8601 UTC of last SRS-rating event), `totalXP: number` (lifetime XP, integer ≥ 0), plus a **derived** `badges: Badge[]` (computed from totalXP + streak + activity — see §Gamification rules). These four fields are returned on `GET /api/auth/me`, `POST /api/auth/login`, and `POST /api/auth/register` (always `0/null/0/[]` on register).
@@ -94,6 +111,7 @@
 | 403 | `LANGUAGE_NOT_SELECTED` | *(v6)* caller's `user.language IS NULL` AND the endpoint needs to default to it (list filtering / create-body inherit). Frontend → redirect `/choose-language`. |
 | 404 | `NOT_FOUND` | resource (topic/exercise/card) does not exist |
 | 409 | `EMAIL_TAKEN` | register with an already-used email |
+| 409 | `TOPIC_NAME_CONFLICT` | *(v8)* `POST/PATCH /api/vocabulary-topics` would violate `(userId, language, name)` uniqueness |
 | 500 | `INTERNAL_ERROR` | unexpected server error |
 
 ---
@@ -168,7 +186,16 @@ VocabularyEntry { id: string, userId: string, word: string, meaning: string,
                   pinyin: string | null,                          // (v6) Chinese only — null when language === "en"
                   hskLevel: number | null,                        // (v6) Chinese only — integer 1–6, null when language === "en"
                   language: Language,                             // (v6)
+                  vocabularyTopicId: string | null,               // (v8) optional FK → VocabularyTopic.id owned by same user, same language; null = untagged
                   isFavorite: boolean, known: boolean,
+                  createdAt: string, updatedAt: string }
+
+// (v8) Personal Vocabulary Topic — per-user, per-language label users attach to vocab entries.
+// NOT the same as Topic (flashcard bucket from v4) or VocabularyEntry.tags[] (free-text labels).
+// Color is an optional UI tint (hex string "#RRGGBB" or null).
+VocabularyTopic { id: string, userId: string, name: string,
+                  color: string | null,                           // (v8) hex color "#RRGGBB" or null
+                  language: Language,                             // (v8) "en" | "zh"; immutable after create
                   createdAt: string, updatedAt: string }
 ```
 
@@ -827,6 +854,7 @@ Request — query params (all optional):
 | `language` *(v6)* | `"en"` \| `"zh"` | filter to entries whose `language` matches. Default = caller's `user.language`. If absent AND `user.language IS NULL` → `403 LANGUAGE_NOT_SELECTED`. |
 | `hskLevel` *(v6)* | integer 1–6 | only entries with this exact `hskLevel` (most useful when `language=zh`) |
 | `cefrLevel` *(v6)* | `A1..C2` | only entries with this exact `cefrLevel` (most useful when `language=en`) |
+| `vocabularyTopicId` *(v8)* | string | filter to entries with this exact `vocabularyTopicId`. **Special sentinel `"__none__"`** → entries where `vocabularyTopicId IS NULL` (untagged). Any other string that does not match an owned topic in the resolved language → empty result (no error — same lenient behavior as `?tag`). |
 
 Unknown/empty params are ignored (no error). Filters combine with AND.
 Response 200 — **list wrapper**:
@@ -840,6 +868,7 @@ Response 200 — **list wrapper**:
       "antonyms": ["rare"], "exampleSentence": "Smartphones are ubiquitous nowadays.",
       "notes": "ôn lại tuần sau", "tags": ["IELTS", "C1"], "cefrLevel": "C1",
       "pinyin": null, "hskLevel": null, "language": "en",
+      "vocabularyTopicId": "vtp_ielts",
       "isFavorite": true, "known": false,
       "createdAt": "2026-06-09T08:30:00.000Z", "updatedAt": "2026-06-09T08:30:00.000Z"
     },
@@ -850,6 +879,7 @@ Response 200 — **list wrapper**:
       "exampleSentence": "你好，我叫小明。", "notes": null,
       "tags": ["HSK1", "chào hỏi"], "cefrLevel": null,
       "pinyin": "nǐ hǎo", "hskLevel": 1, "language": "zh",
+      "vocabularyTopicId": null,
       "isFavorite": false, "known": false,
       "createdAt": "2026-06-13T08:30:00.000Z", "updatedAt": "2026-06-13T08:30:00.000Z"
     }
@@ -885,7 +915,9 @@ Chinese example body:
   "language": "zh"
 }
 ```
-Field types: `word: string` (non-empty), `meaning: string` (non-empty), `pronunciation?: string`, `partOfSpeech?: string`, `synonyms?: string[]`, `antonyms?: string[]`, `exampleSentence?: string`, `notes?: string`, `tags?: string[]`, `cefrLevel?: "A1"|"A2"|"B1"|"B2"|"C1"|"C2"`, **`pinyin?: string`** *(v6)*, **`hskLevel?: number`** *(v6 — integer 1–6)*, **`language?: "en"|"zh"`** *(v6)*.
+Field types: `word: string` (non-empty), `meaning: string` (non-empty), `pronunciation?: string`, `partOfSpeech?: string`, `synonyms?: string[]`, `antonyms?: string[]`, `exampleSentence?: string`, `notes?: string`, `tags?: string[]`, `cefrLevel?: "A1"|"A2"|"B1"|"B2"|"C1"|"C2"`, **`pinyin?: string`** *(v6)*, **`hskLevel?: number`** *(v6 — integer 1–6)*, **`language?: "en"|"zh"`** *(v6)*, **`vocabularyTopicId?: string | null`** *(v8)*.
+
+`vocabularyTopicId` *(v8)*: optional; default `null` (untagged). If provided non-null, MUST reference a `VocabularyTopic` whose `userId === req.user.id` AND whose `language === <resolved language>`. Violation → `400 VALIDATION_ERROR` with `field: "vocabularyTopicId"`. Explicit `null` is allowed and equivalent to omission. The created entry's response includes `vocabularyTopicId` (either the provided id or `null`).
 
 `language` *(v6)*: if omitted, server uses `user.language`; if that is also `null` → `403 LANGUAGE_NOT_SELECTED`. The resolved `language` then drives cross-field validation:
 - `language === "en"` → `pinyin` and `hskLevel` MUST be omitted/null; `cefrLevel` may be set.
@@ -894,7 +926,7 @@ Field types: `word: string` (non-empty), `meaning: string` (non-empty), `pronunc
 Any cross-field violation → `400 VALIDATION_ERROR` with a clear `message` (e.g. "Trường `cefrLevel` không áp dụng cho tiếng Trung — dùng `hskLevel`.").
 
 `userId`, `isFavorite` (false), `known` (false), `id`, `createdAt`, `updatedAt` are set server-side and ignored if sent in the body.
-Response 201 — the created `VocabularyEntry` (single object, NOT wrapped). Errors: 400 `VALIDATION_ERROR` (empty word/meaning, bad cefrLevel/hskLevel, non-string array element, cross-field mismatch), 401 `UNAUTHENTICATED`, 403 `LANGUAGE_NOT_SELECTED` *(v6)*.
+Response 201 — the created `VocabularyEntry` (single object, NOT wrapped). Errors: 400 `VALIDATION_ERROR` (empty word/meaning, bad cefrLevel/hskLevel, non-string array element, cross-field mismatch, *(v8)* invalid `vocabularyTopicId` — not owned by caller or language mismatch), 401 `UNAUTHENTICATED`, 403 `LANGUAGE_NOT_SELECTED` *(v6)*.
 
 ---
 
@@ -911,11 +943,13 @@ Response 200 — single `VocabularyEntry` (NOT wrapped). Errors: 401 `UNAUTHENTI
 Consumed by: `/vocabulary/[id]/edit` (lưu chỉnh sửa)
 Auth: **yes**
 Path param: `id` (VocabularyEntry.id)
-Request body: full replacement of editable fields — same shape & validation as `POST` (`word`/`meaning` required, optional fields optional). Editable: `word, meaning, pronunciation, partOfSpeech, synonyms, antonyms, exampleSentence, notes, tags, cefrLevel, pinyin` *(v6)*, `hskLevel` *(v6)*. `isFavorite`/`known` MAY also be included and will be applied; if omitted they are left unchanged (not reset). `id`, `userId`, `createdAt`, **`language`** *(v6 — immutable; switching an entry's language is a delete-and-recreate operation, not a PUT)* are immutable; `updatedAt` is refreshed server-side.
+Request body: full replacement of editable fields — same shape & validation as `POST` (`word`/`meaning` required, optional fields optional). Editable: `word, meaning, pronunciation, partOfSpeech, synonyms, antonyms, exampleSentence, notes, tags, cefrLevel, pinyin` *(v6)*, `hskLevel` *(v6)*, **`vocabularyTopicId`** *(v8)*. `isFavorite`/`known` MAY also be included and will be applied; if omitted they are left unchanged (not reset). `id`, `userId`, `createdAt`, **`language`** *(v6 — immutable; switching an entry's language is a delete-and-recreate operation, not a PUT)* are immutable; `updatedAt` is refreshed server-side.
 
 Cross-field validation *(v6)* uses the entry's stored `language`: an `en` entry cannot acquire `pinyin`/`hskLevel`; a `zh` entry cannot acquire `cefrLevel`. Violation → `400 VALIDATION_ERROR`.
 
-Response 200 — the updated `VocabularyEntry` (single object). Errors: 400 `VALIDATION_ERROR`, 401 `UNAUTHENTICATED`, 404 `NOT_FOUND`.
+**`vocabularyTopicId` patch semantics *(v8)*:** field is optional in the body. If **absent**, left untouched. If **present** with a non-null string → MUST be a topic id owned by the caller AND of the entry's stored `language` (cross-language reassignment is rejected even if the user owns both) → else `400 VALIDATION_ERROR` with `field: "vocabularyTopicId"`. If **present** and explicitly `null` → clears the tag (entry becomes untagged). The PUT does NOT migrate the entry's language to match a topic — language stays immutable.
+
+Response 200 — the updated `VocabularyEntry` (single object). Errors: 400 `VALIDATION_ERROR` (*(v8)* including invalid `vocabularyTopicId`), 401 `UNAUTHENTICATED`, 404 `NOT_FOUND`.
 
 ---
 
@@ -1009,6 +1043,7 @@ Response 201 — **wraps the created entry in `{ item }`** (this differs from `P
     "notes": null, "tags": [],
     "cefrLevel": null, "pinyin": null, "hskLevel": null,
     "language": "en",
+    "vocabularyTopicId": null,
     "isFavorite": false, "known": false,
     "createdAt": "2026-06-13T10:00:00.000Z", "updatedAt": "2026-06-13T10:00:00.000Z"
   }
@@ -1016,10 +1051,121 @@ Response 201 — **wraps the created entry in `{ item }`** (this differs from `P
 ```
 Notes:
 - `meaning` is intentionally **empty string** (not null) on mine — the schema requires `meaning` to be non-null, so mining seeds it empty and the user fills it later. The frontend MUST surface a "thêm nghĩa" call-to-action on the mined entry in `/vocabulary`.
-- The mined-topic (`slug: "__mined__"`) is a regular user-created Topic — it shows up in `GET /api/topics` and is fully editable/deletable like any other. If the user deletes it, the next mine call recreates it.
+- The mined-topic (`slug: "__mined__"`) is a regular user-created `Topic` (flashcard bucket from v4) — it shows up in `GET /api/topics` and is fully editable/deletable like any other. If the user deletes it, the next mine call recreates it.
+- **`vocabularyTopicId` is ALWAYS `null` on mine *(v8)*.** Mining does NOT accept the field in the body, and the server NEVER auto-assigns a `VocabularyTopic` here. The user may later tag the mined entry via `PUT /api/vocabulary/:id { vocabularyTopicId }`. Rationale: the v7 mined-topic (`Topic`, slug `__mined__`) and the v8 `VocabularyTopic` are orthogonal concepts (flashcard bucket vs vocabulary label); mining stays decoupled from personal vocabulary topics.
 - This endpoint does NOT touch the v7 SRS/XP/streak/badges pipeline — mining is a passive capture, not an active study event. XP is awarded only on `PUT /api/flashcards/:id/progress`.
 
-Errors: 400 `VALIDATION_ERROR` (missing/empty `word`, missing/empty `exampleSentence`, invalid `language`), 401 `UNAUTHENTICATED`.
+Errors: 400 `VALIDATION_ERROR` (missing/empty `word`, missing/empty `exampleSentence`, invalid `language`, *(v8)* `vocabularyTopicId` present in body), 401 `UNAUTHENTICATED`.
+
+---
+
+# Personal Vocabulary Topics  *(v8)*
+
+Per-user, per-language labels users attach to their vocabulary entries. Distinct from `Topic` (the seeded/user-created flashcard bucket from v4) and from `VocabularyEntry.tags[]` (free-text labels). All four endpoints are `Bearer` auth + owner-scoped; non-owner access to a topic that exists → `404 NOT_FOUND` (existence not leaked, matching the v2 vocabulary-entry rule).
+
+> Naming uniqueness: `(userId, language, name)` is unique. Names are trimmed before storage and compared case-sensitively. Two users may both have a topic named "Travel" in `en`; the same user may have an `en/Travel` AND a `zh/Travel`; the same user may NOT have two `en/Travel`. Violation on create/rename → `409 TOPIC_NAME_CONFLICT`.
+
+### GET /api/vocabulary-topics  *(v8)*
+Consumed by: `/vocabulary/topics` (manage page — list + create + rename + delete), `/vocabulary` (populate the topic filter dropdown), `/vocabulary/new` & `/vocabulary/[id]/edit` (populate the topic select on the form)
+Auth: **yes**
+Request — query params (all optional):
+| Param | Type | Default | Effect |
+|-------|------|---------|--------|
+| `language` *(v8)* | `"en"` \| `"zh"` | caller's `user.language` | filter to topics whose `language` matches. If absent AND `user.language IS NULL` → `403 LANGUAGE_NOT_SELECTED` (list-style endpoint). Any other value → `400 VALIDATION_ERROR`. |
+
+Behavior: returns the caller's topics in the resolved language, ordered `name ASC` (case-insensitive). Empty owner set → `{ items: [], total: 0 }`. No pagination — MVP volumes are tiny (≤ a few dozen per user per language).
+Response 200 — **list wrapper**:
+```json
+{
+  "items": [
+    { "id": "vtp_ielts",    "userId": "ckv1...", "name": "IELTS",
+      "color": "#0EA5E9", "language": "en",
+      "createdAt": "2026-06-13T08:00:00.000Z", "updatedAt": "2026-06-13T08:00:00.000Z" },
+    { "id": "vtp_business", "userId": "ckv1...", "name": "Business",
+      "color": null, "language": "en",
+      "createdAt": "2026-06-12T09:00:00.000Z", "updatedAt": "2026-06-12T09:00:00.000Z" }
+  ],
+  "total": 2
+}
+```
+Errors: 401 `UNAUTHENTICATED`, 400 `VALIDATION_ERROR` (invalid `language`), 403 `LANGUAGE_NOT_SELECTED`.
+
+---
+
+### POST /api/vocabulary-topics  *(v8)*
+Consumed by: `/vocabulary/topics` (create form), `/vocabulary/new` (inline "create topic" affordance on the form)
+Auth: **yes**
+Request body:
+```json
+{ "name": "IELTS", "color": "#0EA5E9", "language": "en" }
+```
+Field types:
+- `name: string` — trimmed, length 1–60; **required**. Stored verbatim after trim; case preserved.
+- `color?: string | null` — optional; if provided, MUST match `^#[0-9A-Fa-f]{6}$` (six-digit hex, leading `#`). `null` / omitted → stored `null` (frontend renders a default chip color).
+- `language?: "en" | "zh"` — optional. If omitted, server uses `user.language`; if that is also `null` → `403 LANGUAGE_NOT_SELECTED`. If provided, MUST be `"en"` or `"zh"`.
+
+Behavior: creates a `VocabularyTopic` owned by the caller (`userId = req.user.id`). Trims `name`; rejects empty after trim. Enforces `(userId, language, name)` uniqueness → `409 TOPIC_NAME_CONFLICT` on collision. `id`, `userId`, `createdAt`, `updatedAt` are server-set and ignored if sent in the body.
+
+Response 201 — wrapped in `{ item }` (consistent with v7 `/mine`):
+```json
+{
+  "item": {
+    "id": "vtp_ielts", "userId": "ckv1...", "name": "IELTS",
+    "color": "#0EA5E9", "language": "en",
+    "createdAt": "2026-06-13T08:00:00.000Z", "updatedAt": "2026-06-13T08:00:00.000Z"
+  }
+}
+```
+Errors: 400 `VALIDATION_ERROR` (empty/oversize `name`; invalid hex `color`; invalid `language`), 401 `UNAUTHENTICATED`, 403 `LANGUAGE_NOT_SELECTED`, 409 `TOPIC_NAME_CONFLICT`.
+
+---
+
+### PATCH /api/vocabulary-topics/:id  *(v8)*
+Consumed by: `/vocabulary/topics` (inline rename / color picker)
+Auth: **yes**
+Path param: `id` (VocabularyTopic.id)
+Request body — patch semantics (all fields optional; only provided fields are updated):
+```json
+{ "name": "IELTS Writing", "color": "#22C55E" }
+```
+Field types:
+- `name?: string` — trimmed, length 1–60 when provided. Absent = untouched. Empty after trim → `400 VALIDATION_ERROR`.
+- `color?: string | null` — same hex rule as POST; `null` clears the color back to default.
+- `language` MAY NOT be patched — it is **immutable** after create (matches `Topic` / `VocabularyEntry` precedent). Body MUST NOT include it; if present → silently ignored.
+
+Behavior: owner-only — load by `id`; if not found OR `topic.userId !== req.user.id` → `404 NOT_FOUND` (existence not leaked). Otherwise patch and refresh `updatedAt`. Rename respects the `(userId, language, name)` uniqueness — collision → `409 TOPIC_NAME_CONFLICT`. Renaming to the **same value** (no-op or case-identical) is allowed and returns 200 with `updatedAt` refreshed.
+
+Response 200 — wrapped:
+```json
+{
+  "item": {
+    "id": "vtp_ielts", "userId": "ckv1...", "name": "IELTS Writing",
+    "color": "#22C55E", "language": "en",
+    "createdAt": "2026-06-13T08:00:00.000Z", "updatedAt": "2026-06-13T10:30:00.000Z"
+  }
+}
+```
+Errors: 400 `VALIDATION_ERROR`, 401 `UNAUTHENTICATED`, 404 `NOT_FOUND` (id unknown OR not owned by caller), 409 `TOPIC_NAME_CONFLICT`.
+
+---
+
+### DELETE /api/vocabulary-topics/:id  *(v8)*
+Consumed by: `/vocabulary/topics` (delete button)
+Auth: **yes**
+Path param: `id` (VocabularyTopic.id)
+Request: empty body.
+
+Behavior: owner-only (same 404 rule as PATCH). Transactional:
+1. `UPDATE "VocabularyEntry" SET "vocabularyTopicId" = NULL WHERE "userId" = caller AND "vocabularyTopicId" = id;` (SET NULL cascade — entries become untagged).
+2. `DELETE FROM "VocabularyTopic" WHERE id = id AND "userId" = caller;`.
+
+Vocabulary entries are **NEVER** deleted by a topic delete — only the tag link is cleared. This is the deliberate v8 choice over `ON DELETE CASCADE` (which would lose user data).
+
+Response 200 (parseable JSON, matches v2 `DELETE /api/vocabulary/:id` and v4 `DELETE /api/topics/:slug` precedent):
+```json
+{ "id": "vtp_ielts" }
+```
+Errors: 401 `UNAUTHENTICATED`, 404 `NOT_FOUND` (id unknown OR not owned).
 
 ---
 
@@ -1108,6 +1254,10 @@ Gamification fields (`streak`, `totalXP`, `badges`) are **language-agnostic** �
 | PUT /api/vocabulary/:id/progress *(v2)* | /vocabulary/study |
 | GET /api/vocabulary/tags *(v2)* | /vocabulary |
 | POST /api/vocabulary/mine *(v7)* | /reading/[slug] (highlight-to-mine action) |
+| GET /api/vocabulary-topics *(v8)* | /vocabulary/topics, /vocabulary, /vocabulary/new, /vocabulary/[id]/edit |
+| POST /api/vocabulary-topics *(v8)* | /vocabulary/topics, /vocabulary/new (inline create) |
+| PATCH /api/vocabulary-topics/:id *(v8)* | /vocabulary/topics |
+| DELETE /api/vocabulary-topics/:id *(v8)* | /vocabulary/topics |
 
 No async/long-running operations in MVP — all responses are synchronous (no 202 flows).
 
@@ -1377,3 +1527,55 @@ This:
 1. `GET /api/topics/foo/review` with `user.language=null` and no query param returns `403 LANGUAGE_NOT_SELECTED` (not 404).
 2. With both `en/travel` and `zh/travel` seeded, `GET /api/topics/travel` returns the row matching `user.language`. With `?language=zh` it returns `zh/travel` regardless of `user.language`.
 3. With only `en/travel` and `user.language="zh"`, `GET /api/topics/travel` still returns the `en/travel` row (fallback step 3) — the response `language` field then signals to the frontend that this is a cross-language read.
+
+---
+
+## DIFF — v8 (Personal Vocabulary Topics)
+
+### Shape changes
+
+- **New shape `VocabularyTopic`** — `{ id, userId, name, color, language, createdAt, updatedAt }`. Per-user, per-language label users attach to vocab entries. `color` is `string | null` (hex `#RRGGBB`). `language` is immutable after create (matches `Topic`/`VocabularyEntry` precedent).
+- **`VocabularyEntry` gains `vocabularyTopicId: string | null`** — optional FK → `VocabularyTopic.id`. `null` = untagged (default). Backfill `null` for all pre-v8 entries. Must reference a topic owned by the same user AND with the same `language` as the entry; otherwise the assignment is rejected at write time.
+- `VocabularyEntry.tags[]` is UNCHANGED — it remains the existing free-text labels array, orthogonal to `vocabularyTopicId`. (Filtering by topic and filtering by tag are independent, AND-combined.)
+- Flashcard's `Topic` (v4) is UNCHANGED. The v7 sentence-mining bucket (slug `__mined__`, a `Topic`) is UNCHANGED. `VocabularyTopic` is a separate concept.
+
+### New standard error code
+
+| HTTP | code | When |
+|------|------|------|
+| 409 | `TOPIC_NAME_CONFLICT` | `(userId, language, name)` uniqueness violation on `POST /api/vocabulary-topics` create or `PATCH /api/vocabulary-topics/:id` rename. |
+
+### 4 new endpoints
+
+| Method + path | Request | Success response |
+|---------------|---------|------------------|
+| `GET /api/vocabulary-topics` | query: `language?` | 200 `{ items: VocabularyTopic[], total }` |
+| `POST /api/vocabulary-topics` | body: `{ name*, color?, language? }` | 201 `{ item: VocabularyTopic }` |
+| `PATCH /api/vocabulary-topics/:id` | body: `{ name?, color? }` (patch) | 200 `{ item: VocabularyTopic }` |
+| `DELETE /api/vocabulary-topics/:id` | — | 200 `{ id }` |
+
+### Modified endpoints
+
+| Endpoint | Change |
+|----------|--------|
+| `GET /api/vocabulary` | accepts `?vocabularyTopicId=<id>` filter; sentinel `"__none__"` → untagged entries; unknown id → empty result (no error). Response items include `vocabularyTopicId`. |
+| `POST /api/vocabulary` | body accepts optional `vocabularyTopicId: string | null`. Validated for ownership + language match. Response includes `vocabularyTopicId`. |
+| `PUT /api/vocabulary/:id` | body accepts optional `vocabularyTopicId: string | null`. Absent = untouched; explicit `null` = clear; non-null = retag (ownership + language match required). Response includes `vocabularyTopicId`. |
+| `POST /api/vocabulary/mine` | body does NOT accept `vocabularyTopicId`. Created entry's `vocabularyTopicId` is always `null`. Response includes the field. |
+| `GET /api/vocabulary/:id` | response includes `vocabularyTopicId` (additive). |
+
+### Decisions to honor (v8)
+
+- **`VocabularyTopic` ≠ `Topic`.** `Topic` (v4) is the flashcard bucket, with its own `slug`, `userId`, and `language`, consumed by `/topics/*`. `VocabularyTopic` (v8) is a per-user vocabulary label, with its own `id`, `userId`, `name`, `color`, and `language`, consumed by `/vocabulary*`. They never share an id space, an endpoint family, or a database table. Backend MUST keep them in separate Prisma models.
+- **`VocabularyTopic` ≠ `VocabularyEntry.tags[]`.** `tags[]` is a free-text array on the entry (e.g. `["IELTS", "C1"]`); `vocabularyTopicId` is a single typed FK to an owned object with id and color. Both filters coexist on `GET /api/vocabulary` and AND together. There is NO server-side migration from tags to topics; users may use either or both. UI may suggest a topic name from existing tags but does not auto-convert.
+- **Language match is enforced at the entry boundary.** A `zh` entry CANNOT carry an `en` topic id, even if the user owns both. This keeps the v6 "all owned data is language-scoped" guarantee intact and prevents the dashboard / `?language=` filters from drifting.
+- **Delete cascade is SET NULL, not row delete.** The v8 `DELETE /api/vocabulary-topics/:id` only unlinks; entries persist as untagged. Compare to `DELETE /api/topics/:slug` (v4) which DOES cascade-delete the topic's flashcards + progress — that semantic is appropriate for owned learning content, but vocabulary entries represent the user's research over time and we do NOT want a misclick on a topic to wipe out a dozen vocab entries.
+- **Naming uniqueness is `(userId, language, name)`.** Not `(userId, name)` — a user studying both English and Chinese MAY have two topics named "Travel" (one per language). Collisions surface `409 TOPIC_NAME_CONFLICT` with a Vietnamese `message` like `"Bạn đã có chủ đề tên 'Travel' trong tiếng Anh."`. Names are trimmed before storage; case is preserved but comparison is case-sensitive (matches the existing `tag` comparison rule).
+- **`__none__` sentinel is the only special-cased filter value.** `GET /api/vocabulary?vocabularyTopicId=__none__` → `vocabularyTopicId IS NULL`. Empty string `?vocabularyTopicId=` → ignored (treated as absent, returns all entries). Unknown id → empty list. Rationale: an explicit sentinel makes the "show untagged" filter URL-shareable and survives serialization; treating empty string as "untagged" would silently break the v2 lenient "ignore empty params" rule.
+- **Response wrap convention:** all single-item responses on `/api/vocabulary-topics` (POST, PATCH) use `{ item: ... }`, matching v7 `/mine`. List uses `{ items, total }`. Delete uses `{ id }`. This is a deliberate v8 choice — going forward, all new endpoints in this contract SHOULD wrap their single-item bodies in `{ item }` to give frontend hooks a stable shape and let TypeScript discriminators stay clean.
+- **`vocabularyTopicId` validation is NEVER inferred from `tags[]`.** Removing a tag does not affect `vocabularyTopicId`; assigning a topic does not write to `tags[]`. They are independent fields.
+- **PATCH not PUT** for topic edits — partial updates are the norm (rename without touching color, or vice versa). The 4-route family deliberately uses `PATCH` while the legacy `/api/vocabulary/:id` uses `PUT`. Frontend hooks must respect the verb difference. (Future cleanup may unify, but v8 prioritizes explicit patch semantics on the new endpoints.)
+- **No JWT / auth shape change.** Topics are loaded on demand by their endpoints; they are NOT embedded in `/api/auth/me` or the JWT.
+- **No async / 202 flows** — all four endpoints are synchronous.
+- **Backfill migration:** `vocabularyTopicId` on `VocabularyEntry` is added as nullable with default `NULL`. Existing rows acquire `NULL` (untagged) — no data movement needed. The `VocabularyTopic` table starts empty for every user.
+- **Out of scope for v8:** bulk re-tagging endpoint (frontend can loop PUT calls), color presets / theme picker (frontend supplies a default palette), per-topic stats on the topic itself (the frontend computes counts from `GET /api/vocabulary?vocabularyTopicId=<id>&...` if needed; the topic object stays minimal).

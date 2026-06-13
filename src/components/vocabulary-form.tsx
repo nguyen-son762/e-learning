@@ -1,14 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, Sparkles } from "lucide-react";
+import { Loader2, Plus, Sparkles } from "lucide-react";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import type {
   CefrLevel,
   HskLevel,
   Language,
   VocabularyEntry,
   VocabularyInput,
+  VocabularyTopic,
 } from "@/lib/types";
 import { HSK_LEVELS } from "@/lib/types";
 import { lookupWord, DictionaryNotFoundError } from "@/lib/dictionary";
@@ -24,6 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { VocabularyTopicDialog } from "@/components/vocabulary-topic-dialog";
 
 const CEFR_LEVELS: CefrLevel[] = ["A1", "A2", "B1", "B2", "C1", "C2"];
 
@@ -32,6 +35,8 @@ const CEFR_NONE = "none";
 const HSK_NONE = "none_hsk";
 
 const POS_NONE = "none_pos";
+/** v8 — sentinel for "no vocabulary topic" (Radix Select disallows empty value). */
+const TOPIC_NONE = "none_topic";
 export const PARTS_OF_SPEECH: { value: string; label: string }[] = [
   { value: "noun", label: "noun — danh từ" },
   { value: "verb", label: "verb — động từ" },
@@ -71,6 +76,7 @@ export interface VocabularyFormState {
   cefrLevel: string; // "" = none. Only meaningful when language === "en".
   pinyin: string; // v6 — only meaningful when language === "zh".
   hskLevel: string; // v6 — "" or "1".."6". Only meaningful when language === "zh".
+  vocabularyTopicId: string; // v8 — "" = untagged; non-empty = topic id.
 }
 
 function emptyState(): VocabularyFormState {
@@ -87,6 +93,7 @@ function emptyState(): VocabularyFormState {
     cefrLevel: "",
     pinyin: "",
     hskLevel: "",
+    vocabularyTopicId: "",
   };
 }
 
@@ -105,6 +112,7 @@ export function stateFromEntry(entry: VocabularyEntry): VocabularyFormState {
     cefrLevel: entry.cefrLevel ?? "",
     pinyin: entry.pinyin ?? "",
     hskLevel: entry.hskLevel != null ? String(entry.hskLevel) : "",
+    vocabularyTopicId: entry.vocabularyTopicId ?? "",
   };
 }
 
@@ -135,6 +143,9 @@ function toInput(s: VocabularyFormState, language: Language): VocabularyInput {
     if (s.pinyin.trim()) input.pinyin = s.pinyin.trim();
     if (s.hskLevel) input.hskLevel = Number(s.hskLevel) as HskLevel;
   }
+  // v8 — always send vocabularyTopicId so PUT can clear the tag with explicit
+  // null. On POST, explicit null is equivalent to omission per the contract.
+  input.vocabularyTopicId = s.vocabularyTopicId || null;
   return input;
 }
 
@@ -144,6 +155,8 @@ export function VocabularyForm({
   submitLabel,
   onSubmit,
   showDictionary = false,
+  topics,
+  onTopicCreated,
 }: {
   initial?: VocabularyFormState;
   /**
@@ -157,6 +170,17 @@ export function VocabularyForm({
   onSubmit: (input: VocabularyInput) => Promise<void>;
   /** Show the "Tự điền từ điển" auto-fill button (client-only, en only). */
   showDictionary?: boolean;
+  /**
+   * v8 — topics for the "Chủ đề từ vựng" select. List MUST be pre-filtered to
+   * `language` (the form does not filter); for /vocabulary/new pass topics for
+   * `user.language`, for /vocabulary/[id]/edit pass topics for `entry.language`.
+   */
+  topics?: VocabularyTopic[];
+  /**
+   * v8 — called after the inline "+ Tạo chủ đề mới" dialog creates a topic, so
+   * the parent can prepend it to its local cache. The form auto-selects it.
+   */
+  onTopicCreated?: (topic: VocabularyTopic) => void;
 }) {
   const [form, setForm] = useState<VocabularyFormState>(
     initial ?? emptyState(),
@@ -164,6 +188,8 @@ export function VocabularyForm({
   const [submitting, setSubmitting] = useState(false);
   const [looking, setLooking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // v8 — inline topic-create dialog state.
+  const [topicDialogOpen, setTopicDialogOpen] = useState(false);
 
   const isZh = language === "zh";
   // Dictionary auto-fill is English-only (api.dictionaryapi.dev is en).
@@ -314,6 +340,53 @@ export function VocabularyForm({
         />
       </div>
 
+      {/* v8 — Vocabulary topic select (per-language). Hidden if the parent
+          didn't pass topics (back-compat); otherwise always renders. */}
+      {topics !== undefined && (
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="vocabularyTopicId">Chủ đề từ vựng</Label>
+          <Select
+            value={form.vocabularyTopicId || TOPIC_NONE}
+            onValueChange={(v) =>
+              set("vocabularyTopicId", v === TOPIC_NONE ? "" : v)
+            }
+          >
+            <SelectTrigger id="vocabularyTopicId" aria-label="Chủ đề từ vựng">
+              <SelectValue placeholder="Chưa gắn" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={TOPIC_NONE}>Chưa gắn</SelectItem>
+              {topics.map((t) => (
+                <SelectItem key={t.id} value={t.id}>
+                  <span className="inline-flex items-center gap-2">
+                    {t.color && (
+                      <span
+                        aria-hidden
+                        className="inline-block h-2.5 w-2.5 rounded-full"
+                        style={{ backgroundColor: t.color }}
+                      />
+                    )}
+                    {t.name}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            onClick={() => setTopicDialogOpen(true)}
+            className={cn(
+              "h-auto self-start p-0 text-sm text-[var(--primary)]",
+            )}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Tạo chủ đề mới
+          </Button>
+        </div>
+      )}
+
       <div className="grid gap-5 sm:grid-cols-2">
         <div className="flex flex-col gap-2">
           <Label htmlFor="pronunciation">
@@ -452,6 +525,20 @@ export function VocabularyForm({
         {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
         {submitLabel}
       </Button>
+
+      {/* v8 — inline "+ Tạo chủ đề mới" dialog. Topics are language-locked to
+          the form's `language` prop (entry.language on edit; user.language on new). */}
+      <VocabularyTopicDialog
+        open={topicDialogOpen}
+        mode="create"
+        language={language}
+        onSuccess={(t) => {
+          setTopicDialogOpen(false);
+          set("vocabularyTopicId", t.id);
+          onTopicCreated?.(t);
+        }}
+        onClose={() => setTopicDialogOpen(false)}
+      />
     </form>
   );
 }

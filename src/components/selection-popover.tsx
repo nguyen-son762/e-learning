@@ -127,7 +127,11 @@ export function SelectionPopover({
   }
 
   async function handleSave(input: VocabularyInput) {
-    await mineVocabulary({ ...input, language });
+    // v8 — `POST /api/vocabulary/mine` rejects `vocabularyTopicId` in the body
+    // (mining always lands untagged). Strip it before sending.
+    const { vocabularyTopicId: _ignored, ...rest } = input;
+    void _ignored;
+    await mineVocabulary({ ...rest, language });
     toast.success(`Đã lưu "${input.word}" vào từ vựng của bạn`);
     setDialogOpen(false);
     dismissPopover();
@@ -147,6 +151,7 @@ export function SelectionPopover({
       cefrLevel: "",
       pinyin: "",
       hskLevel: "",
+      vocabularyTopicId: "", // v8 — mining always lands untagged per contract.
     }
     : undefined;
 

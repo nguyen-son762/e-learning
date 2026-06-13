@@ -12,6 +12,9 @@ import {
 
 const CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"] as const;
 
+// v8 — sentinel for "show untagged entries" on GET /api/vocabulary?vocabularyTopicId=
+const UNTAGGED_SENTINEL = "__none__";
+
 // Shared body schema for create (POST) and full-replace (PUT).
 // word/meaning required + non-empty (trimmed); optional scalars optional;
 // arrays default to []; cefrLevel constrained to the CEFR set.
@@ -32,10 +35,40 @@ const entryBodySchema = z.object({
   pinyin: z.string().optional(),
   hskLevel: z.number().int().min(1).max(6).optional(),
   language: z.enum(["en", "zh"]).optional(),
+  // v8 — optional FK to a VocabularyTopic owned by the caller, same language as the entry.
+  // PUT: absent = leave untouched; explicit null = clear; non-null string = retag.
+  // POST: absent or null = untagged; non-null string = tag at create time.
+  vocabularyTopicId: z.union([z.string(), z.null()]).optional(),
   // PUT may also set the flags; if omitted they are left unchanged (handled below).
   isFavorite: z.boolean().optional(),
   known: z.boolean().optional(),
 });
+
+// v8 — verify the caller owns the topic AND its language matches the entry's stored language.
+// Throws 400 VALIDATION_ERROR with field: "vocabularyTopicId" on any mismatch (cross-user OR
+// cross-language). Per contract, both rejection paths surface the same field — leakage of which
+// is acceptable per "either is acceptable" in the data-model spec.
+async function assertOwnedTopicSameLanguage(
+  topicId: string,
+  userId: string,
+  language: Language
+): Promise<void> {
+  const topic = await prisma.vocabularyTopic.findUnique({ where: { id: topicId } });
+  if (!topic || topic.userId !== userId) {
+    throw new AppError(
+      "VALIDATION_ERROR",
+      "Chủ đề không thuộc về bạn hoặc không tồn tại.",
+      { field: "vocabularyTopicId" }
+    );
+  }
+  if (topic.language !== language) {
+    throw new AppError(
+      "VALIDATION_ERROR",
+      "Chủ đề không cùng ngôn ngữ với từ vựng.",
+      { field: "vocabularyTopicId" }
+    );
+  }
+}
 
 type EntryBody = {
   cefrLevel?: string | undefined;
@@ -92,6 +125,11 @@ export async function listVocabulary(req: Request, res: Response): Promise<void>
     typeof req.query.partOfSpeech === "string" ? req.query.partOfSpeech.trim() : "";
   const favorite = typeof req.query.favorite === "string" ? req.query.favorite : "";
   const sort = typeof req.query.sort === "string" ? req.query.sort : "newest";
+  // v8 — optional topic filter. "__none__" sentinel → untagged entries (vocabularyTopicId IS NULL).
+  // Any other non-empty string → exact-match (unknown ids → empty result, same lenient rule as `?tag`).
+  // Empty string / absent → no filter (returns everything).
+  const vocabularyTopicIdRaw =
+    typeof req.query.vocabularyTopicId === "string" ? req.query.vocabularyTopicId : "";
 
   const where: Record<string, unknown> = { userId, language };
 
@@ -105,6 +143,11 @@ export async function listVocabulary(req: Request, res: Response): Promise<void>
   if (partOfSpeech) where.partOfSpeech = partOfSpeech;
   if (favorite === "true") where.isFavorite = true;
   else if (favorite === "false") where.isFavorite = false;
+  if (vocabularyTopicIdRaw === UNTAGGED_SENTINEL) {
+    where.vocabularyTopicId = null;
+  } else if (vocabularyTopicIdRaw !== "") {
+    where.vocabularyTopicId = vocabularyTopicIdRaw;
+  }
 
   const orderBy =
     sort === "oldest"
@@ -150,6 +193,13 @@ export async function createVocabulary(req: Request, res: Response): Promise<voi
   const language = await resolveCreateLanguage(userId, body.language);
   assertLanguageFields(language, body);
 
+  // v8 — if a non-null vocabularyTopicId is supplied, verify ownership + same language.
+  let vocabularyTopicId: string | null = null;
+  if (body.vocabularyTopicId !== undefined && body.vocabularyTopicId !== null) {
+    await assertOwnedTopicSameLanguage(body.vocabularyTopicId, userId, language);
+    vocabularyTopicId = body.vocabularyTopicId;
+  }
+
   const created = await prisma.vocabularyEntry.create({
     data: {
       userId,
@@ -166,6 +216,7 @@ export async function createVocabulary(req: Request, res: Response): Promise<voi
       pinyin: language === "zh" ? body.pinyin ?? null : null,
       hskLevel: language === "zh" ? body.hskLevel ?? null : null,
       language,
+      vocabularyTopicId,
       // isFavorite/known set server-side; ignore any in-body values on create.
       isFavorite: false,
       known: false,
@@ -198,6 +249,21 @@ export async function updateVocabulary(req: Request, res: Response): Promise<voi
   }
   assertLanguageFields(language, body);
 
+  // v8 — vocabularyTopicId patch semantics:
+  //  - absent (undefined) → leave untouched
+  //  - explicit null     → clear the tag
+  //  - non-null string   → retag (ownership + same-language validated)
+  // The entry's stored language is the SSOT — never trust a client-supplied language here.
+  const topicPatch: { vocabularyTopicId?: string | null } = {};
+  if (body.vocabularyTopicId !== undefined) {
+    if (body.vocabularyTopicId === null) {
+      topicPatch.vocabularyTopicId = null;
+    } else {
+      await assertOwnedTopicSameLanguage(body.vocabularyTopicId, userId, language);
+      topicPatch.vocabularyTopicId = body.vocabularyTopicId;
+    }
+  }
+
   const updated = await prisma.vocabularyEntry.update({
     where: { id: req.params.id },
     data: {
@@ -216,6 +282,7 @@ export async function updateVocabulary(req: Request, res: Response): Promise<voi
       // Flags applied if present; omitted -> left unchanged (not reset).
       ...(body.isFavorite !== undefined ? { isFavorite: body.isFavorite } : {}),
       ...(body.known !== undefined ? { known: body.known } : {}),
+      ...topicPatch,
     },
   });
 
@@ -295,6 +362,19 @@ function minedSlugFor(userId: string): string {
 
 export async function mineVocabulary(req: Request, res: Response): Promise<void> {
   const userId = req.userId!;
+  // v8 — mining MUST NOT accept vocabularyTopicId. Reject with 400 VALIDATION_ERROR before zod
+  // strips the field, so callers get a clear signal that this endpoint cannot tag.
+  if (
+    typeof req.body === "object" &&
+    req.body !== null &&
+    Object.prototype.hasOwnProperty.call(req.body, "vocabularyTopicId")
+  ) {
+    throw new AppError(
+      "VALIDATION_ERROR",
+      "POST /api/vocabulary/mine không chấp nhận vocabularyTopicId.",
+      { field: "vocabularyTopicId" }
+    );
+  }
   const body = parseBody(mineSchema, req.body);
   const language: Language = await resolveCreateLanguage(userId, body.language);
 
@@ -334,6 +414,9 @@ export async function mineVocabulary(req: Request, res: Response): Promise<void>
       language,
       isFavorite: false,
       known: false,
+      // v8 — mined entries are ALWAYS untagged; they live under the v7 mined Topic (flashcard
+      // bucket), which is orthogonal to v8 VocabularyTopic labels. User may PUT later to tag.
+      vocabularyTopicId: null,
     },
   });
 
