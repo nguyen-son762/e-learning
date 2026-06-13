@@ -300,9 +300,7 @@ export interface DashboardResponse {
 
 // ---- v7 — Sentence Mining ----
 
-export interface MineVocabularyInput {
-  word: string;
-  exampleSentence: string;
+export interface MineVocabularyInput extends Omit<VocabularyInput, "language"> {
   language: Language; // REQUIRED — pass the reading screen's language explicitly
 }
 

@@ -1,12 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { X, Loader2, Save } from "lucide-react";
+import { X, BookPlus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { VocabularyForm } from "@/components/vocabulary-form";
 import { mineVocabulary } from "@/hooks/useVocabulary";
-import type { Language } from "@/lib/types";
-import { ApiError } from "@/lib/api";
+import type { Language, VocabularyInput } from "@/lib/types";
 
 interface Pos {
   top: number;
@@ -14,25 +20,12 @@ interface Pos {
 }
 
 interface Props {
-  /** Element whose selections we listen to. */
   containerRef: React.RefObject<HTMLElement | null>;
-  /** When false (e.g. after submit), the popover is suppressed. */
   enabled: boolean;
-  /** Full passage text — used to extract the surrounding sentence for context. */
   passageText: string;
-  /**
-   * v7 — language of the reading exercise. Required because POST
-   * /api/vocabulary/mine does NOT inherit from user.language — the screen's
-   * language is the source of truth.
-   */
   language: Language;
 }
 
-/**
- * v7 — Sentence Mining popover. On a 1–5 word selection inside
- * `containerRef`, shows the selected word + surrounding sentence and lets the
- * user save it via POST /api/vocabulary/mine.
- */
 export function SelectionPopover({
   containerRef,
   enabled,
@@ -42,7 +35,7 @@ export function SelectionPopover({
   const [word, setWord] = useState<string>("");
   const [sentence, setSentence] = useState<string>("");
   const [pos, setPos] = useState<Pos | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
   const popRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -70,7 +63,6 @@ export function SelectionPopover({
         setPos(null);
         return;
       }
-      // Word-count cap: 1–5 words (CJK falls through this — 0 spaces → 1 "word").
       const wordCount = text.split(/\s+/).filter(Boolean).length;
       if (wordCount < 1 || wordCount > 5) {
         setWord("");
@@ -81,9 +73,7 @@ export function SelectionPopover({
 
       const anchorNode = sel.anchorNode;
       const container = containerRef.current;
-      if (!container || !anchorNode || !container.contains(anchorNode)) {
-        return;
-      }
+      if (!container || !anchorNode || !container.contains(anchorNode)) return;
 
       const range = sel.getRangeAt(0);
       const rect = range.getBoundingClientRect();
@@ -99,14 +89,12 @@ export function SelectionPopover({
     }
 
     el.addEventListener("mouseup", handleMouseUp);
-    return () => {
-      el.removeEventListener("mouseup", handleMouseUp);
-    };
+    return () => el.removeEventListener("mouseup", handleMouseUp);
   }, [containerRef, enabled, passageText]);
 
-  // Dismiss on outside click.
+  // Dismiss popover on outside click (but not when dialog is open).
   useEffect(() => {
-    if (!pos) return;
+    if (!pos || dialogOpen) return;
     function handleDocClick(e: MouseEvent) {
       const node = popRef.current;
       if (node && e.target instanceof Node && !node.contains(e.target)) {
@@ -125,82 +113,108 @@ export function SelectionPopover({
       clearTimeout(t);
       document.removeEventListener("mousedown", handleDocClick);
     };
-  }, [pos]);
+  }, [pos, dialogOpen]);
 
-  function dismiss() {
+  function dismissPopover() {
     setPos(null);
     setWord("");
     setSentence("");
     window.getSelection()?.removeAllRanges();
   }
 
-  async function saveMined() {
-    if (!word || saving) return;
-    setSaving(true);
-    try {
-      await mineVocabulary({ word, exampleSentence: sentence, language });
-      toast.success(`Đã lưu "${word}" vào Mined vocab`);
-      dismiss();
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        toast.error("Từ này đã có trong vocab của bạn");
-        dismiss();
-      } else {
-        const msg =
-          err instanceof ApiError ? err.message : "Không lưu được flashcard.";
-        toast.error(msg);
-      }
-    } finally {
-      setSaving(false);
-    }
+  function openDialog() {
+    setDialogOpen(true);
   }
 
-  if (!pos || !word) return null;
+  async function handleSave(input: VocabularyInput) {
+    await mineVocabulary({ ...input, language });
+    toast.success(`Đã lưu "${input.word}" vào từ vựng của bạn`);
+    setDialogOpen(false);
+    dismissPopover();
+  }
+
+  const initialFormState = word
+    ? {
+      word,
+      meaning: "",
+      pronunciation: "",
+      partOfSpeech: "",
+      synonyms: "",
+      antonyms: "",
+      exampleSentence: sentence !== word ? sentence : "",
+      notes: "",
+      tags: "",
+      cefrLevel: "",
+      pinyin: "",
+      hskLevel: "",
+    }
+    : undefined;
 
   return (
-    <div
-      ref={popRef}
-      role="dialog"
-      aria-label="Lưu flashcard"
-      style={{
-        position: "absolute",
-        top: pos.top,
-        left: pos.left,
-        transform: "translate(-50%, -100%)",
-      }}
-      className="z-50 flex max-w-sm flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 shadow-lg"
-    >
-      <div className="flex items-start justify-between gap-2">
-        <span className="max-w-[16rem] truncate text-lg font-bold">{word}</span>
-        <button
-          type="button"
-          aria-label="Đóng"
-          onClick={dismiss}
-          className="rounded p-1 text-[var(--muted-foreground)] hover:bg-[var(--secondary)]"
+    <>
+      {/* Inline popover bubble */}
+      {pos && word && !dialogOpen && (
+        <div
+          ref={popRef}
+          role="tooltip"
+          style={{
+            position: "absolute",
+            top: pos.top,
+            left: pos.left,
+            transform: "translate(-50%, -100%)",
+          }}
+          className="z-50 flex max-w-xs flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 shadow-lg"
         >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-      {sentence && sentence !== word && (
-        <p className="line-clamp-2 text-sm italic text-[var(--muted-foreground)]">
-          “{sentence}”
-        </p>
-      )}
-      <div className="flex justify-end">
-        <Button size="sm" onClick={saveMined} disabled={saving}>
-          {saving ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Save className="h-4 w-4" />
+          <div className="flex items-start justify-between gap-2">
+            <span className="max-w-[14rem] truncate font-bold">{word}</span>
+            <button
+              type="button"
+              aria-label="Đóng"
+              onClick={dismissPopover}
+              className="rounded p-1 text-[var(--muted-foreground)] hover:bg-[var(--secondary)]"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          {sentence && sentence !== word && (
+            <p className="line-clamp-2 text-xs italic text-[var(--muted-foreground)]">
+              "{sentence}"
+            </p>
           )}
-          Lưu flashcard
-        </Button>
-      </div>
-    </div>
+          <Button size="sm" onClick={openDialog} className="w-full">
+            <BookPlus className="h-4 w-4" />
+            Lưu vào từ vựng của tôi
+          </Button>
+        </div>
+      )}
+
+      {/* Vocab dialog */}
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={(open) => {
+          setDialogOpen(open);
+          if (!open) dismissPopover();
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Lưu vào từ vựng của tôi</DialogTitle>
+          </DialogHeader>
+          {initialFormState && (
+            <VocabularyForm
+              initial={initialFormState}
+              language={language}
+              submitLabel="Lưu từ vựng"
+              showDictionary={language === "en"}
+              onSubmit={handleSave}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
-/** Find the sentence in `text` containing `needle` (split on . ? ! 。！？). */
 function findSentence(text: string, needle: string): string | null {
   const sentences = text.split(/(?<=[.!?。！？])\s*/);
   const n = needle.toLowerCase();
