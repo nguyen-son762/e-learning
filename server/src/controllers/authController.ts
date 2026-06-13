@@ -19,6 +19,7 @@ const loginSchema = z.object({
 });
 
 // POST /api/auth/register -> 201 { token, user }
+// v7 — register-time user has no earned badges (gamification state starts empty).
 export async function register(req: Request, res: Response): Promise<void> {
   const body = parseBody(registerSchema, req.body);
   const email = body.email.toLowerCase();
@@ -34,10 +35,11 @@ export async function register(req: Request, res: Response): Promise<void> {
   });
 
   const token = signToken(user.id);
-  res.status(201).json({ token, user: toUser(user) });
+  res.status(201).json({ token, user: toUser(user, []) });
 }
 
 // POST /api/auth/login -> 200 { token, user }
+// v7 — include the user's persisted earned-badge log on the response.
 export async function login(req: Request, res: Response): Promise<void> {
   const body = parseBody(loginSchema, req.body);
   const email = body.email.toLowerCase();
@@ -52,15 +54,25 @@ export async function login(req: Request, res: Response): Promise<void> {
     throw new AppError("INVALID_CREDENTIALS", "Email hoặc mật khẩu không đúng.");
   }
 
+  const badges = await prisma.earnedBadge.findMany({
+    where: { userId: user.id },
+    orderBy: { earnedAt: "asc" },
+  });
+
   const token = signToken(user.id);
-  res.status(200).json({ token, user: toUser(user) });
+  res.status(200).json({ token, user: toUser(user, badges) });
 }
 
 // GET /api/auth/me -> 200 { user }
+// v7 — wraps streak/totalXP/lastStudiedAt + the user's persisted badge log into the User shape.
 export async function me(req: Request, res: Response): Promise<void> {
   const user = await prisma.user.findUnique({ where: { id: req.userId! } });
   if (!user) {
     throw new AppError("UNAUTHENTICATED", "Token không hợp lệ hoặc đã hết hạn.");
   }
-  res.status(200).json({ user: toUser(user) });
+  const badges = await prisma.earnedBadge.findMany({
+    where: { userId: user.id },
+    orderBy: { earnedAt: "asc" },
+  });
+  res.status(200).json({ user: toUser(user, badges) });
 }

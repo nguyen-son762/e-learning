@@ -1,5 +1,8 @@
 # Data Model — Multi-Language Learning App (MVP)
 
+> **v7 (2026-06-13): + Streak/XP gamification + Sentence Mining bucket.**
+> Adds three persisted gamification columns to `User` — `streak: Int @default(0)`, `lastStudiedAt: DateTime?`, `totalXP: Int @default(0)` — and introduces a new `EarnedBadge` table (one row per earned badge, `@@unique([userId, badgeId])`, never deleted). The wire-level `User.badges: Badge[]` is **derived** from this table per-request. No schema change on `Flashcard`/`FlashcardProgress` — XP/streak math is in the API layer; only the `User` row is mutated alongside the existing SRS update on `PUT /api/flashcards/:id/progress`. **Sentence mining** introduces a reserved slug `__mined__` per (userId, language) — auto-created on first `POST /api/vocabulary/mine` call. No new column on `Topic`; mining reuses the v6 `(slug, language)` composite unique. Backfill migration sets `streak=0, totalXP=0, lastStudiedAt=NULL` for all pre-v7 users and leaves `EarnedBadge` empty. See v7 DIFF at end.
+>
 > **v6 (2026-06-13): + Chinese Learning Module (multi-language).** Introduces a `Language` enum (`EN | ZH`) wired into four models: `User.language` (nullable — forces first-time selection), `Topic.language`, `ReadingExercise.language`, `VocabularyEntry.language`. `Flashcard` deliberately stays unchanged — language is inherited from `topic.language`. `VocabularyEntry` also gains `pinyin: String?` (Hanyu Pinyin with tone marks) and `hskLevel: Int?` (1–6). The previously-global `Topic.slug` and `ReadingExercise.slug` unique indexes are **replaced** with per-language composite uniques `@@unique([slug, language])` so `travel` may exist for both `en` and `zh`. Migration backfills `language = EN` for all existing rows; new users land with `language = NULL` and must pick on first login. See v6 DIFF at end.
 >
 > **v5 (2026-06-11): + Admin Reading Management.** Introduces a `Role` enum (`USER | ADMIN`) and a `role Role @default(USER)` column on `User`. Powers admin-only mutations on `ReadingExercise` and `ReadingQuestion` (CRUD). No other model changes; existing seeded `User` rows backfill to `USER`. See v5 DIFF at end.
@@ -29,10 +32,13 @@ A learner account (or admin). Auth is email + password (bcrypt hash), JWT issued
 | name | String | display name |
 | role | Role | *(v5)* `USER` (default) \| `ADMIN`; gates `/admin/*` routes and reading-content mutations |
 | language | Language? | *(v6)* `EN` \| `ZH` \| `null`; **nullable** — null = user has never picked. Forces redirect to `/choose-language` after auth. Default `null` for new rows; backfill `EN` for pre-v6 rows. |
+| streak | Int | *(v7)* consecutive-day study streak; **default `0`**; backfill `0` for pre-v7 rows. Updated server-side on every `PUT /api/flashcards/:id/progress`. Language-agnostic. |
+| lastStudiedAt | DateTime? | *(v7)* timestamp of the user's most recent SRS rating event (any quality, any language); nullable; **default `NULL`**; backfill `NULL`. Used by the streak machine to decide same-day / consecutive-day / streak-break. |
+| totalXP | Int | *(v7)* lifetime XP; **default `0`**; backfill `0`. Increments by `[0,5,10,15][quality]` on every SRS rating event. Language-agnostic. |
 | createdAt | DateTime | default now() |
 | updatedAt | DateTime | @updatedAt |
 
-Relations: `flashcardProgress[]`, `readingAttempts[]`, `vocabularyEntries[]`, `topics[]` *(v4 — user-created topics owned by this user)*.
+Relations: `flashcardProgress[]`, `readingAttempts[]`, `vocabularyEntries[]`, `topics[]` *(v4 — user-created topics owned by this user)*, `earnedBadges[]` *(v7 — see EarnedBadge below)*.
 
 #### Role enum *(v5)*
 
@@ -262,6 +268,34 @@ Validation (enforced at API layer):
 
 ---
 
+### EarnedBadge  *(v7 — Gamification)*
+A persistent record that a user has earned a built-in badge. Append-only — once a row exists for `(userId, badgeId)`, it is never deleted or updated. The wire `User.badges: Badge[]` is materialized from this table on every request that returns `User`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| id | String (cuid) | PK |
+| userId | String | FK → User.id (owner) |
+| badgeId | String | one of `"first-review"`, `"week-streak"`, `"century-xp"` (string column, not an enum — keeps it easy to add badges in future versions without a migration) |
+| earnedAt | DateTime | timestamp the badge was first detected; defaults to `now()` |
+
+Relations: `user` (User).
+
+Constraints:
+- `@@unique([userId, badgeId])` — at most one row per (user, badge). Earning attempts after the first are no-ops.
+- `@@index([userId])` — powers the per-request "what badges does this user have?" lookup that drives `User.badges`.
+
+Semantics:
+- Detection happens server-side after every `PUT /api/flashcards/:id/progress` that updates `streak` or `totalXP` (or in the same transaction as the `first-review` check). Triggers:
+  - `first-review` — earned the first time a user completes a `PUT /api/flashcards/:id/progress` (any quality).
+  - `week-streak` — earned the first time `user.streak >= 7` after the update.
+  - `century-xp` — earned the first time `user.totalXP >= 100` after the update.
+- The check is idempotent — the unique constraint absorbs concurrent double-earn attempts (P2002 → ignore).
+- **Labels live in code**, NOT in the DB — the wire `Badge.label` is looked up from a server-side constant map `BADGE_LABELS = { "first-review": "Đánh giá đầu tiên", "week-streak": "7 ngày liên tiếp", "century-xp": "100 XP" }` so the SSOT for display strings is alongside the badge detection logic. Adding a new badge in v8 requires updating the map AND the detection code together.
+
+> ASSUMPTION: badges are never revoked, even if the user resets their topic progress or deletes their mined-topic. v7 doesn't expose any path for badge removal.
+
+---
+
 ## Relationships (summary)
 
 ```
@@ -279,6 +313,7 @@ User 1───* VocabularyEntry                                  (v2)
 - ReadingExercise 1—* ReadingAttempt
 - User 1—* ReadingAttempt
 - User 1—* VocabularyEntry (a user owns many private vocabulary entries) *(v2)*
+- User 1—* EarnedBadge *(v7 — append-only badge log; one row per (user, badge))*
 
 ---
 
@@ -514,3 +549,86 @@ Cross-field violations → `400 VALIDATION_ERROR` with a Vietnamese `message`.
 - The `403 LANGUAGE_NOT_SELECTED` error must NOT be thrown by `PUT /api/users/me/language`, detail endpoints, or any endpoint with an explicit language argument.
 - JWT payload MAY include `language` to skip a DB hit, but the language-switch handler (`PUT /api/users/me/language`) MUST issue a new token (or refresh) so the JWT and DB stay in sync. If the JWT does not carry language, the middleware re-reads the column on every request.
 - The seed script (devops) is responsible for seeding HSK 1–3 topics (≥13 topics, ≥200 flashcards) and 2–3 HSK 2–3 reading exercises, all with `language = ZH`. Existing English seeds keep `language = EN`. See `feature-chinese-learning.md` §5 for content scope.
+
+---
+
+## DIFF — v7 (Gamification + Sentence Mining)
+
+### Extended model — `User` gains three persisted gamification columns
+
+| Column | Type | Default | Notes |
+|--------|------|---------|-------|
+| `streak` | Int | `0` | consecutive-day study streak; updated on every flashcard SRS rating; backfill `0` |
+| `lastStudiedAt` | DateTime? | `NULL` | timestamp of last SRS rating event (any quality, any language); backfill `NULL` |
+| `totalXP` | Int | `0` | lifetime XP; backfill `0` |
+
+`badges` does NOT exist as a column — it's derived per-request from `EarnedBadge`.
+
+### New model — `EarnedBadge`
+
+```prisma
+model EarnedBadge {
+  id        String   @id @default(cuid())
+  userId    String
+  badgeId   String   // "first-review" | "week-streak" | "century-xp"
+  earnedAt  DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, badgeId])
+  @@index([userId])
+}
+```
+
+Append-only — `PUT`/`DELETE` are never issued. Concurrent double-earn is absorbed by the unique constraint.
+
+### Unchanged models
+
+`Flashcard`, `FlashcardProgress`, `Topic`, `ReadingExercise`, `ReadingQuestion`, `ReadingAttempt`, `VocabularyEntry` — no column changes. v7's SRS rating mutation continues to use the existing `FlashcardProgress` columns; gamification side-effects mutate `User` + `EarnedBadge` in the same transaction.
+
+### Sentence Mining — no new schema
+
+`POST /api/vocabulary/mine` reuses the v4/v6 user-created Topic shape with a **reserved slug `__mined__`** scoped per (`userId`, `language`) — enforced by the v6 `@@unique([slug, language])` plus the per-user `userId` filter in the controller. No new Topic column; no new `VocabularyEntry` column.
+
+The vocabulary entry created by mining lives in the existing `VocabularyEntry` table with `language` matching the body. It is NOT linked to the mined-topic via a hard FK (vocabulary entries are owner-scoped, not topic-scoped — the mined-topic exists only to surface "you have X mined items" in `GET /api/topics`).
+
+### Migration plan
+
+Single Prisma migration `2026_06_13_add_gamification`:
+
+1. **Add columns** to `User`:
+   ```sql
+   ALTER TABLE "User" ADD COLUMN "streak"        INT NOT NULL DEFAULT 0;
+   ALTER TABLE "User" ADD COLUMN "lastStudiedAt" TIMESTAMP;
+   ALTER TABLE "User" ADD COLUMN "totalXP"       INT NOT NULL DEFAULT 0;
+   ```
+   Defaults handle backfill cleanly — no data-migration script needed.
+2. **Create `EarnedBadge` table** with the schema above + unique + index.
+3. The migration is forward-only. Rollback drops the three User columns + the EarnedBadge table; no destructive data loss (badges/streaks are transient gamification state).
+
+### Validation rules summary (enforced at API layer)
+
+| Field | Rule |
+|-------|------|
+| `User.streak` | integer ≥ 0; clients never write it directly |
+| `User.lastStudiedAt` | nullable ISO 8601 UTC; clients never write it directly |
+| `User.totalXP` | integer ≥ 0; clients never write it directly |
+| `EarnedBadge.badgeId` | server-side constant: one of `{"first-review","week-streak","century-xp"}`. The DB type is `String` to keep future badges additive without migrations. |
+| `POST /api/vocabulary/mine` `word` | trimmed, non-empty string |
+| `POST /api/vocabulary/mine` `exampleSentence` | trimmed, non-empty string |
+| `POST /api/vocabulary/mine` `language` | required; `"en"` \| `"zh"` (lowercase wire); else `400 VALIDATION_ERROR` |
+
+### Backend implementation notes
+
+- The SRS handler should run a **single transaction** that: (a) upserts `FlashcardProgress` with the new SM-2 numbers, (b) updates `User.streak/lastStudiedAt/totalXP`, (c) inserts any newly-earned `EarnedBadge` rows (catch P2002 and ignore — concurrent double-earn). The response is assembled from the final state of the User row + the upserted progress row + the constant `xpEarned`.
+- The mining handler should run a **single transaction** that: (a) finds-or-creates the `(userId, "__mined__", language)` Topic, (b) creates the `VocabularyEntry`. The find-or-create can be a `Prisma.$transaction` with `upsert` on Topic and `create` on entry — the v6 `@@unique([slug, language])` index does NOT include `userId`, so the upsert MUST filter by `userId, slug, language` and the controller does the dedup.
+- Compute `dueToday` for the dashboard as: `count(Flashcard) WHERE topic.language = resolvedLanguage AND (no FlashcardProgress row for (me, fc.id) OR FlashcardProgress.nextReviewAt <= now())`. Two-step: (1) count cards in language-scoped topics, (2) subtract cards with a progress row whose `nextReviewAt > now()`. Or do it directly with a `LEFT JOIN` on FlashcardProgress.
+
+### What does NOT change
+
+- v6 multi-language semantics, slug-collision rules, language gating.
+- v5 admin role + reading CRUD.
+- v4 ownership semantics.
+- v3 SM-2 math (still 0–5 SM-2 internal; only the wire input changes to 0–3).
+- All existing endpoints' response status codes.
+- `Flashcard` shape (still language-derived).
+

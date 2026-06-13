@@ -47,19 +47,26 @@ export function useTopicDetail(slug: string, language?: Language) {
   );
 }
 
-// PUT /api/flashcards/:id/progress → FlashcardProgressResponse
-// v3: optional `quality` (0–5) feeds the SM-2 SRS scheduler. Omitted bodies
-// keep working (backend defaults to quality=3).
+/**
+ * v7 — 4-button SRS rating. Wire enum: 0=Again, 1=Hard, 2=Good, 3=Easy.
+ * Default 2 (Good) if omitted server-side.
+ */
+export type SrsQuality = 0 | 1 | 2 | 3;
+
+/**
+ * PUT /api/flashcards/:id/progress → FlashcardProgressResponse
+ * v7: `quality` is `0|1|2|3` (Again/Hard/Good/Easy). The body still requires
+ * `known` per contract — derived from quality (Good/Easy → true, Again/Hard
+ * → false). Response includes `xpEarned` and `newStreak`.
+ */
 export function markFlashcard(
   id: string,
-  known: boolean,
-  quality?: number,
+  quality: SrsQuality,
 ): Promise<FlashcardProgressResponse> {
-  const body: { known: boolean; quality?: number } = { known };
-  if (typeof quality === "number") body.quality = quality;
+  const known = quality >= 2;
   return fetchJson<FlashcardProgressResponse>(
     `/api/flashcards/${encodeURIComponent(id)}/progress`,
-    { method: "PUT", body },
+    { method: "PUT", body: { known, quality } },
   );
 }
 

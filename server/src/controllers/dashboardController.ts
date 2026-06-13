@@ -3,9 +3,11 @@ import { prisma } from "../lib/prisma";
 import { AppError } from "../lib/errors";
 import { toTopicSummary, completionPercent } from "../lib/serializers";
 import { resolveListLanguage } from "../lib/language";
+import { toBadge } from "../lib/gamification";
 
-// GET /api/dashboard -> { totals, topicProgress: {items,total}, recentAttempts: {items,total} }
+// GET /api/dashboard -> { totals, topicProgress, recentAttempts, dueToday, streak, totalXP, badges }
 // v6 — scopes the dashboard to the resolved language (?language=en|zh or user.language default).
+// v7 — adds dueToday (language-scoped due-card count), streak/totalXP, badges (lifetime, language-agnostic).
 export async function getDashboard(req: Request, res: Response): Promise<void> {
   const userId = req.userId!;
   const language = await resolveListLanguage(userId, req.query.language);
@@ -44,6 +46,35 @@ export async function getDashboard(req: Request, res: Response): Promise<void> {
     include: { exercise: { select: { slug: true, title: true } } },
   });
 
+  // v7 — dueToday: count of flashcards (in the resolved language) whose progress row is missing
+  // (never reviewed = new card, counts as due) OR has nextReviewAt <= now. Computed as the total
+  // minus the "not-due" progress rows so we avoid a second card→topic join.
+  const now = new Date();
+  const totalCardsInLanguage = await prisma.flashcard.count({
+    where: { topic: { language } },
+  });
+  const notDueProgressCount = await prisma.flashcardProgress.count({
+    where: {
+      userId,
+      flashcard: { topic: { language } },
+      nextReviewAt: { gt: now },
+    },
+  });
+  const dueToday = Math.max(0, totalCardsInLanguage - notDueProgressCount);
+
+  // v7 — gamification fields. Badges are lifetime/language-agnostic per the contract.
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { streak: true, totalXP: true },
+  });
+  if (!user) {
+    throw new AppError("UNAUTHENTICATED", "Token không hợp lệ hoặc đã hết hạn.");
+  }
+  const earnedBadges = await prisma.earnedBadge.findMany({
+    where: { userId },
+    orderBy: { earnedAt: "asc" },
+  });
+
   res.status(200).json({
     totals: {
       topicCount: topics.length,
@@ -68,6 +99,10 @@ export async function getDashboard(req: Request, res: Response): Promise<void> {
       })),
       total: readingAttemptCount,
     },
+    dueToday,
+    streak: user.streak,
+    totalXP: user.totalXP,
+    badges: earnedBadges.map(toBadge),
   });
 }
 

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useVocabulary, setVocabularyProgress } from "@/hooks/useVocabulary";
+import { useDashboard } from "@/hooks/useDashboard";
 import type { VocabularyEntry } from "@/lib/types";
 import { ApiError } from "@/lib/api";
 import { speak, isTtsSupported } from "@/lib/tts";
@@ -29,6 +30,8 @@ import { EmptyState, ErrorState } from "@/components/states";
 export default function VocabularyStudyPage() {
   // Deck = full vocabulary set (sorted oldest→newest for stable order).
   const { data, loading, error, refetch } = useVocabulary({ sort: "oldest" });
+  // v7 — surface "n cards due today" CTA (language-scoped via dashboard).
+  const { data: dash } = useDashboard();
   const ttsOk = isTtsSupported();
 
   const [cards, setCards] = useState<VocabularyEntry[]>([]);
@@ -123,9 +126,17 @@ export default function VocabularyStudyPage() {
 
       <div className="flex flex-col gap-1">
         <h1 className="text-2xl font-bold">Học từ vựng của tôi</h1>
-        <span className="text-sm text-[var(--muted-foreground)]">
-          {knownCount}/{total} đã thuộc · {percent}%
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm text-[var(--muted-foreground)]">
+            {knownCount}/{total} đã thuộc · {percent}%
+          </span>
+          {/* v7 — language-scoped due count from /api/dashboard */}
+          {dash && (
+            <Badge variant="secondary">
+              {dash.dueToday} từ cần ôn hôm nay
+            </Badge>
+          )}
+        </div>
       </div>
 
       {total === 0 ? (

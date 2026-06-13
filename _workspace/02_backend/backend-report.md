@@ -1,3 +1,62 @@
+# Backend Report — v7 (SRS 4-button + Streak/XP + Sentence Mining)
+
+## v7 — 2026-06-13
+
+**Contract:** v7 section of `_workspace/01_design/api-contract.md` (Features A/B/C).
+
+### Schema (`server/prisma/schema.prisma`) + migration `20260613100000_v7_gamification`
+- `User` gained `streak Int @default(0)`, `lastStudiedAt DateTime?` (`last_studied_at`), `totalXP Int @default(0)` (`total_xp`).
+- New `EarnedBadge` model — `{ id, userId, badgeId, earnedAt }` with `@@unique([userId, badgeId])` and `@@index([userId])`. Cascade-deletes with the parent user. Used as the persisted "once earned, never lost" log; the derived `User.badges` array is built by joining this table.
+
+### `server/src/lib/gamification.ts` (new)
+- `wireToSm2Quality(0|1|2|3) → 0|3|4|5` — Again→0, Hard→3, Good→4, Easy→5.
+- `xpForQuality` — Again=0, Hard=5, Good=10, Easy=15 (per the v7 contract).
+- `computeNewStreak` — UTC-day rule: previous UTC day → +=1, same UTC day → unchanged, otherwise → 1. Quality 0 (Again) does NOT advance streak (returns `currentStreak`) but caller still updates `lastStudiedAt`.
+- `detectNewlyEarnedBadges` — `first-review` on the user's first ever rating call; `week-streak` when `streak >= 7` for the first time; `century-xp` when `totalXP >= 100` for the first time.
+- `BADGE_LABELS` — Vietnamese display strings per the contract.
+
+### `PUT /api/flashcards/:id/progress` (`topicController.ts`)
+- Wire `quality` is now `z.number().int().min(0).max(3).optional()` (was 0..5). Default = 2 (Good). Mapped to SM-2 quality on the way in; existing `computeSrs` is unchanged.
+- After the SRS upsert, awards XP and updates streak in the SAME transaction (`prisma.$transaction([upsert, user.update])`) so a partial failure can't leave XP awarded but no progress row written.
+- `firstReviewEver` derived BEFORE updates by counting the user's existing `FlashcardProgress` rows.
+- Newly-earned badges are persisted via `createMany({ skipDuplicates: true })` against the `@@unique([userId, badgeId])` constraint so concurrent ratings can't double-insert.
+- Response gains `xpEarned: number` and `newStreak: number` (additive to existing `flashcardId/known/updatedAt/nextReviewAt`).
+
+### `GET /api/dashboard` (`dashboardController.ts`)
+- Added `dueToday: number` — computed as `(total flashcards in resolved language) − (progress rows for this user where nextReviewAt > now)`. Cards with no progress row (= never reviewed) are implicitly counted as due. Language-scoped exactly like every other dashboard field.
+- Added `streak: number`, `totalXP: number` from `User`; `badges: Badge[]` from `EarnedBadge` (lifetime, language-agnostic per the contract).
+
+### `GET /api/auth/me`, `POST /api/auth/login`, `POST /api/auth/register`, `PUT /api/users/me/language`
+- All four return the `User` shape extended with `streak/lastStudiedAt/totalXP/badges`. `register` returns `badges: []` (fresh user). Other three read `EarnedBadge` rows and pass them to `toUser`.
+
+### `POST /api/vocabulary/mine` (`vocabularyController.ts` + `vocabularyRoutes.ts`)
+- New endpoint. Body `{ word: string, exampleSentence: string, language?: "en"|"zh" }`.
+- `language` resolves via `resolveCreateLanguage` (defaults to `user.language`, 403 `LANGUAGE_NOT_SELECTED` if null and absent).
+- Find-or-creates a per-user, per-language Topic. **Implementation note:** the schema's `@@unique([slug, language])` is global, so two users cannot both own a Topic at `("__mined__", "en")`. To honor the contract's intent ("per-user, per-language mined bucket; re-mining lands in the same slot") I derive the slug as `"__mined__-<userId>"`. From the caller's perspective the behavior is identical (one bucket per user+language; re-mining reuses; delete + re-mine creates fresh) — only the slug literal differs from the spec.
+- Creates a `VocabularyEntry` with `word`, `exampleSentence`, and the resolved `language`; all other fields default (meaning is "" until the user edits it).
+- Returns `201 { item: VocabularyEntry }`. Errors: 400 `VALIDATION_ERROR` on missing/empty `word` or `exampleSentence`, 403 `LANGUAGE_NOT_SELECTED` when applicable, 401 `UNAUTHENTICATED`.
+
+### Serializers (`server/src/lib/serializers.ts`)
+- `toUser(u, earnedBadges = [])` — adds `streak`, `lastStudiedAt` (ISO or null), `totalXP`, `badges` (mapped via `toBadge`). Caller passes earned-badge rows; serializer stays pure/sync.
+
+### Build
+- `npm run build` (in `server/`) — clean. `npx tsc --noEmit` clean.
+- Migration SQL hand-written to match the Prisma diff: 3 `ALTER TABLE` on `users` (additive, with defaults) + `CREATE TABLE earned_badges` + unique index + FK.
+
+### Files touched
+- `server/prisma/schema.prisma`
+- `server/prisma/migrations/20260613100000_v7_gamification/migration.sql` (new)
+- `server/src/lib/gamification.ts` (new)
+- `server/src/lib/serializers.ts`
+- `server/src/controllers/authController.ts`
+- `server/src/controllers/userController.ts`
+- `server/src/controllers/topicController.ts`
+- `server/src/controllers/dashboardController.ts`
+- `server/src/controllers/vocabularyController.ts`
+- `server/src/routes/vocabularyRoutes.ts`
+
+---
+
 # Backend Report — v6 (Multi-language Chinese Module)
 
 **Owner:** Son (backend-engineer)

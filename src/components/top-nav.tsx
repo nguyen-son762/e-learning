@@ -149,6 +149,14 @@ export function TopNav({
         </div>
 
         <div className="flex items-center gap-1">
+        {/* v7 — compact streak + XP counters from /me. */}
+        <span
+          className="hidden items-center gap-2 rounded-md px-2 py-1 text-sm font-medium text-[var(--muted-foreground)] sm:flex"
+          aria-label={`Streak ${user.streak} ngày, ${user.totalXP} XP`}
+        >
+          <span>🔥 {user.streak}</span>
+          <span>⭐ {user.totalXP}</span>
+        </span>
         {/* v6 — language switcher; hides itself on /choose-language */}
         {user.language && (
           <LanguageSwitcher

@@ -303,9 +303,23 @@ export default function VocabularyListPage() {
                           <HskBadge level={entry.hskLevel as HskLevel} />
                         )}
                       </div>
-                      <p className="text-sm text-[var(--foreground)]">
-                        {entry.meaning}
-                      </p>
+                      {/* v7 — mined entries land with empty meaning; surface a CTA. */}
+                      {entry.meaning === "" ? (
+                        <Button
+                          asChild
+                          variant="link"
+                          size="sm"
+                          className="h-auto self-start p-0 text-sm text-[var(--primary)]"
+                        >
+                          <Link href={`/vocabulary/${entry.id}/edit`}>
+                            + Thêm nghĩa
+                          </Link>
+                        </Button>
+                      ) : (
+                        <p className="text-sm text-[var(--foreground)]">
+                          {entry.meaning}
+                        </p>
+                      )}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       <Button

@@ -10,6 +10,7 @@ const languageSchema = z.object({
 });
 
 // PUT /api/users/me/language -> 200 { user: User }   (v6)
+// v7 — response shape matches GET /api/auth/me, so include the persisted badge log.
 export async function setLanguage(req: Request, res: Response): Promise<void> {
   const userId = req.userId!;
   const { language } = parseBody(languageSchema, req.body);
@@ -22,5 +23,10 @@ export async function setLanguage(req: Request, res: Response): Promise<void> {
     throw new AppError("UNAUTHENTICATED", "Token không hợp lệ hoặc đã hết hạn.");
   }
 
-  res.status(200).json({ user: toUser(updated) });
+  const badges = await prisma.earnedBadge.findMany({
+    where: { userId },
+    orderBy: { earnedAt: "asc" },
+  });
+
+  res.status(200).json({ user: toUser(updated, badges) });
 }

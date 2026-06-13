@@ -10,14 +10,16 @@ import {
   deleteVocabulary,
   setFavorite,
   setProgress,
+  mineVocabulary,
 } from "../controllers/vocabularyController";
 
 const router = Router();
 
 // All vocabulary endpoints require auth and are owner-scoped.
-// NOTE: /tags is declared before /:id so it is not captured as an id param.
+// NOTE: /tags and /mine are declared before /:id so they are not captured as an id param.
 router.get("/", requireAuth, asyncHandler(listVocabulary));
 router.get("/tags", requireAuth, asyncHandler(listTags));
+router.post("/mine", requireAuth, asyncHandler(mineVocabulary));
 router.post("/", requireAuth, asyncHandler(createVocabulary));
 router.get("/:id", requireAuth, asyncHandler(getVocabulary));
 router.put("/:id", requireAuth, asyncHandler(updateVocabulary));

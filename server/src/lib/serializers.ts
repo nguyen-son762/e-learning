@@ -7,7 +7,9 @@ import type {
   ReadingQuestion as PrismaReadingQuestion,
   ReadingAttempt as PrismaReadingAttempt,
   VocabularyEntry as PrismaVocabularyEntry,
+  EarnedBadge as PrismaEarnedBadge,
 } from "@prisma/client";
+import { toBadge } from "./gamification";
 
 const iso = (d: Date): string => d.toISOString();
 
@@ -21,13 +23,19 @@ function asLanguage(v: string): Language {
   return v === "zh" ? "zh" : "en";
 }
 
-export function toUser(u: PrismaUser) {
+// v7 — User response includes streak/lastStudiedAt/totalXP/badges. `badges` is always an array
+// (empty if none earned). Caller passes earned badge rows so this serializer stays sync/pure.
+export function toUser(u: PrismaUser, earnedBadges: PrismaEarnedBadge[] = []) {
   return {
     id: u.id,
     email: u.email,
     name: u.name,
     role: u.role as "USER" | "ADMIN",
     language: asLanguageOrNull(u.language),
+    streak: u.streak,
+    lastStudiedAt: u.lastStudiedAt ? iso(u.lastStudiedAt) : null,
+    totalXP: u.totalXP,
+    badges: earnedBadges.map(toBadge),
     createdAt: iso(u.createdAt),
   };
 }

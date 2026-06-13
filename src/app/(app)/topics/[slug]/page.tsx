@@ -130,7 +130,9 @@ export default function TopicStudyPage({
     }
     setSavingId(id);
     try {
-      await markFlashcard(id, known);
+      // v7 — topic page is a flat known/unknown toggle (not SRS review).
+      // Map to the 4-button enum: known → Good (2), unknown → Again (0).
+      await markFlashcard(id, known ? 2 : 0);
     } catch (err) {
       // revert thẻ vừa đánh dấu nếu lưu thất bại
       setCards((cs) =>

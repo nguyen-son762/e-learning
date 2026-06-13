@@ -1,12 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Plus, X, Loader2 } from "lucide-react";
+import { X, Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { createVocabulary } from "@/hooks/useVocabulary";
-import { lookupWord, DictionaryNotFoundError } from "@/lib/dictionary";
-import type { VocabularyInput } from "@/lib/types";
+import { mineVocabulary } from "@/hooks/useVocabulary";
+import type { Language } from "@/lib/types";
 import { ApiError } from "@/lib/api";
 
 interface Pos {
@@ -19,26 +18,37 @@ interface Props {
   containerRef: React.RefObject<HTMLElement | null>;
   /** When false (e.g. after submit), the popover is suppressed. */
   enabled: boolean;
-  /** Optional sentence-level context for "exampleSentence" auto-fill. */
-  passageText?: string;
+  /** Full passage text — used to extract the surrounding sentence for context. */
+  passageText: string;
+  /**
+   * v7 — language of the reading exercise. Required because POST
+   * /api/vocabulary/mine does NOT inherit from user.language — the screen's
+   * language is the source of truth.
+   */
+  language: Language;
 }
 
 /**
- * Floats a "Add to vocabulary" popover near the user's text selection inside
- * `containerRef`. 1–5 word selections only. Dismisses on outside click, ✕,
- * or when the selection collapses. Looks up the word via the client-side
- * dictionary (best-effort) before POSTing to /api/vocabulary.
+ * v7 — Sentence Mining popover. On a 1–5 word selection inside
+ * `containerRef`, shows the selected word + surrounding sentence and lets the
+ * user save it via POST /api/vocabulary/mine.
  */
-export function SelectionPopover({ containerRef, enabled, passageText }: Props) {
+export function SelectionPopover({
+  containerRef,
+  enabled,
+  passageText,
+  language,
+}: Props) {
   const [word, setWord] = useState<string>("");
+  const [sentence, setSentence] = useState<string>("");
   const [pos, setPos] = useState<Pos | null>(null);
   const [saving, setSaving] = useState(false);
   const popRef = useRef<HTMLDivElement | null>(null);
 
-  // Listen for mouseup inside the container and decide whether to show.
   useEffect(() => {
     if (!enabled) {
       setWord("");
+      setSentence("");
       setPos(null);
       return;
     }
@@ -49,23 +59,26 @@ export function SelectionPopover({ containerRef, enabled, passageText }: Props) 
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed) {
         setWord("");
+        setSentence("");
         setPos(null);
         return;
       }
       const text = sel.toString().trim();
       if (!text) {
         setWord("");
+        setSentence("");
         setPos(null);
         return;
       }
-      const wordCount = text.split(/\s+/).length;
+      // Word-count cap: 1–5 words (CJK falls through this — 0 spaces → 1 "word").
+      const wordCount = text.split(/\s+/).filter(Boolean).length;
       if (wordCount < 1 || wordCount > 5) {
         setWord("");
+        setSentence("");
         setPos(null);
         return;
       }
 
-      // Ensure the selection lives inside our container.
       const anchorNode = sel.anchorNode;
       const container = containerRef.current;
       if (!container || !anchorNode || !container.contains(anchorNode)) {
@@ -76,10 +89,11 @@ export function SelectionPopover({ containerRef, enabled, passageText }: Props) 
       const rect = range.getBoundingClientRect();
       if (rect.width === 0 && rect.height === 0) return;
 
+      const ctx = findSentence(passageText, text) ?? text;
       setWord(text);
-      // Position above the selection; scroll-offset so it stays anchored on scroll.
+      setSentence(ctx);
       setPos({
-        top: rect.top + window.scrollY - 8, // sit just above the selection
+        top: rect.top + window.scrollY - 8,
         left: rect.left + window.scrollX + rect.width / 2,
       });
     }
@@ -88,7 +102,7 @@ export function SelectionPopover({ containerRef, enabled, passageText }: Props) 
     return () => {
       el.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [containerRef, enabled]);
+  }, [containerRef, enabled, passageText]);
 
   // Dismiss on outside click.
   useEffect(() => {
@@ -96,16 +110,14 @@ export function SelectionPopover({ containerRef, enabled, passageText }: Props) 
     function handleDocClick(e: MouseEvent) {
       const node = popRef.current;
       if (node && e.target instanceof Node && !node.contains(e.target)) {
-        // Don't dismiss if the user is selecting more text — the next mouseup
-        // will recompute. Just check that the click isn't on a fresh selection.
         const sel = window.getSelection();
         if (!sel || sel.isCollapsed) {
           setPos(null);
           setWord("");
+          setSentence("");
         }
       }
     }
-    // Defer to avoid catching the same mouseup that opened us.
     const t = setTimeout(() => {
       document.addEventListener("mousedown", handleDocClick);
     }, 0);
@@ -118,44 +130,26 @@ export function SelectionPopover({ containerRef, enabled, passageText }: Props) 
   function dismiss() {
     setPos(null);
     setWord("");
+    setSentence("");
     window.getSelection()?.removeAllRanges();
   }
 
-  async function addToVocabulary() {
+  async function saveMined() {
     if (!word || saving) return;
     setSaving(true);
-
-    // Best-effort dictionary lookup; failures fall through to a bare entry.
-    // Seed `meaning` with `word` so the POST satisfies the contract's
-    // non-empty `meaning` requirement even when the dictionary returns nothing.
-    const input: VocabularyInput = { word, meaning: word };
     try {
-      const fill = await lookupWord(word);
-      if (fill.meaning) input.meaning = fill.meaning;
-      if (fill.pronunciation) input.pronunciation = fill.pronunciation;
-      if (fill.partOfSpeech) input.partOfSpeech = fill.partOfSpeech;
-      if (fill.exampleSentence) {
-        input.exampleSentence = fill.exampleSentence;
-      } else if (passageText) {
-        // Fallback: pull the sentence containing the word from the passage.
-        const sentence = findSentence(passageText, word);
-        if (sentence) input.exampleSentence = sentence;
-      }
-    } catch (err) {
-      // Not-found / network / parse — proceed without dictionary fill.
-      if (!(err instanceof DictionaryNotFoundError)) {
-        // silent fallback — we still try to save the word
-      }
-    }
-
-    try {
-      await createVocabulary(input);
-      toast.success(`Đã thêm "${word}" vào từ vựng của bạn`);
+      await mineVocabulary({ word, exampleSentence: sentence, language });
+      toast.success(`Đã lưu "${word}" vào Mined vocab`);
       dismiss();
     } catch (err) {
-      const msg =
-        err instanceof ApiError ? err.message : "Không thêm được từ vào từ vựng.";
-      toast.error(msg);
+      if (err instanceof ApiError && err.status === 409) {
+        toast.error("Từ này đã có trong vocab của bạn");
+        dismiss();
+      } else {
+        const msg =
+          err instanceof ApiError ? err.message : "Không lưu được flashcard.";
+        toast.error(msg);
+      }
     } finally {
       setSaving(false);
     }
@@ -167,42 +161,54 @@ export function SelectionPopover({ containerRef, enabled, passageText }: Props) 
     <div
       ref={popRef}
       role="dialog"
-      aria-label="Thêm vào từ vựng"
+      aria-label="Lưu flashcard"
       style={{
         position: "absolute",
         top: pos.top,
         left: pos.left,
         transform: "translate(-50%, -100%)",
       }}
-      className="z-50 flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 shadow-lg"
+      className="z-50 flex max-w-sm flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 shadow-lg"
     >
-      <span className="max-w-[14rem] truncate text-sm font-bold">{word}</span>
-      <Button size="sm" onClick={addToVocabulary} disabled={saving}>
-        {saving ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : (
-          <Plus className="h-4 w-4" />
-        )}
-        Thêm vào từ vựng
-      </Button>
-      <button
-        type="button"
-        aria-label="Đóng"
-        onClick={dismiss}
-        className="rounded p-1 text-[var(--muted-foreground)] hover:bg-[var(--secondary)]"
-      >
-        <X className="h-4 w-4" />
-      </button>
+      <div className="flex items-start justify-between gap-2">
+        <span className="max-w-[16rem] truncate text-lg font-bold">{word}</span>
+        <button
+          type="button"
+          aria-label="Đóng"
+          onClick={dismiss}
+          className="rounded p-1 text-[var(--muted-foreground)] hover:bg-[var(--secondary)]"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      {sentence && sentence !== word && (
+        <p className="line-clamp-2 text-sm italic text-[var(--muted-foreground)]">
+          “{sentence}”
+        </p>
+      )}
+      <div className="flex justify-end">
+        <Button size="sm" onClick={saveMined} disabled={saving}>
+          {saving ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Save className="h-4 w-4" />
+          )}
+          Lưu flashcard
+        </Button>
+      </div>
     </div>
   );
 }
 
-function findSentence(text: string, word: string): string | null {
-  // Coarse sentence split on . ! ? — good enough for highlighting context.
-  const sentences = text.split(/(?<=[.!?])\s+/);
-  const needle = word.toLowerCase();
+/** Find the sentence in `text` containing `needle` (split on . ? ! 。！？). */
+function findSentence(text: string, needle: string): string | null {
+  const sentences = text.split(/(?<=[.!?。！？])\s*/);
+  const n = needle.toLowerCase();
   for (const s of sentences) {
-    if (s.toLowerCase().includes(needle)) return s.trim();
+    if (s.toLowerCase().includes(n)) {
+      const trimmed = s.trim();
+      if (trimmed) return trimmed;
+    }
   }
   return null;
 }

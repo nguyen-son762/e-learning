@@ -269,6 +269,29 @@ Status: completed (typecheck ✓, lint ✓, `next build` ✓ — 22 routes, `/ch
 - Topic-review SRS page branches on `user.language` (not topic.language) — backend should never return mixed-language results in a single review batch, but if it does the render won't match.
 - Chinese flashcard malformed-card fallback: when `parseChineseCardBack(back)` fails, the back face renders the raw `back` string plus an inline Alert hint "Định dạng thẻ không chuẩn." — verify with admin-seeded sample cards.
 
+## v7 changes (2026-06-13) — 4-button SRS + Streak/XP + Sentence Mining
+
+`npx tsc --noEmit`: **PASS** (clean exit 0).
+
+### Files touched
+- `src/lib/types.ts` — new `Badge` shape; `User` gains `streak`, `lastStudiedAt`, `totalXP`, `badges`. `FlashcardProgressResponse` gains `xpEarned`, `newStreak`. `DashboardResponse` gains `streak`, `totalXP`, `dueToday`, `badges`. New `MineVocabularyInput`, `MineVocabularyResponse` (wrapped `{item}`).
+- `src/hooks/useTopics.ts` — new `SrsQuality = 0|1|2|3`. `markFlashcard(id, quality)` now takes quality directly (Again/Hard/Good/Easy); `known` is derived (`quality >= 2`). Body sends `{ known, quality }`. Response still `FlashcardProgressResponse` (now with `xpEarned`/`newStreak`).
+- `src/hooks/useVocabulary.ts` — new `mineVocabulary({ word, exampleSentence, language })` → `MineVocabularyResponse`. `language` is required (NOT inherited from user.language).
+- `src/app/(app)/topics/[slug]/review/page.tsx` — replaced 2-button UI with 4-button row (Again destructive / Hard outline-orange / Good default / Easy success). Shows "Ôn lại sau: X ngày · +N XP ⭐" feedback after each rating. Toast "+X XP · 🔥 N ngày" on every rating. Calls `refresh()` from AuthContext after each rating so badges from XP/streak thresholds appear in TopNav/dashboard without a manual refresh.
+- `src/app/(app)/topics/[slug]/page.tsx` — flat topic toggle still uses `markFlashcard(id, known ? 2 : 0)` (Good for known, Again for not-known).
+- `src/components/selection-popover.tsx` — rewritten to use `POST /api/vocabulary/mine` instead of `POST /api/vocabulary`. Now shows selected word + surrounding sentence + "Lưu flashcard" button. Passes the **reading exercise's** `language` (not user.language). On 409 → "Từ này đã có trong vocab của bạn"; on success → "Đã lưu '[word]' vào Mined vocab".
+- `src/app/(app)/reading/[slug]/page.tsx` — threads `data.language` into `<SelectionPopover>` so mining uses the exercise's language.
+- `src/app/(app)/dashboard/page.tsx` — added 3 stat tiles at top (Hôm nay cần ôn / 🔥 Streak / ⭐ XP) + badges strip below (one chip per earned badge, label rendered as-is).
+- `src/components/top-nav.tsx` — added compact "🔥 N  ⭐ N" indicator next to language switcher (sm+ only, read from `user` so it's free with `/me`).
+- `src/app/(app)/vocabulary/study/page.tsx` — added "N từ cần ôn hôm nay" Badge in header, read from `useDashboard().dueToday`.
+- `src/app/(app)/vocabulary/page.tsx` — mined entries (`meaning === ""`) show a "+ Thêm nghĩa" link to the edit form instead of the empty meaning line.
+
+### Wire-shape notes (for QA)
+- `markFlashcard` body is now `{ known, quality }` where `quality ∈ {0,1,2,3}`. Server maps 0→0 Again, 1→3 Hard, 2→4 Good, 3→5 Easy. Default `quality=2` server-side.
+- `POST /api/vocabulary/mine` response is `{ item }` (wrapped). The hook returns `MineVocabularyResponse`; callers consume `.item` if they need the entry, but the popover currently only needs success/failure.
+- Dashboard `streak`, `totalXP`, `badges` are language-agnostic — same values across `?language=en` and `?language=zh`. `dueToday` IS language-scoped.
+- Stored user in localStorage may be missing v7 fields after a stale session — `/me` runs on every `(app)` mount and replaces it, so the first paint is from /me, not localStorage.
+
 ### Known follow-ups (out of scope for this task)
 - §2 mobile sheet: language switcher in the hamburger as a "labeled select-style row" (design-spec §2 v6). Currently the dropdown still works on mobile but lives next to the avatar; a sheet row would be more discoverable.
 - `ToneBadge` is exported but not yet used (intentional: design-spec §3.5b calls it "optional decoration"; back of card already shows tone via the diacritic).

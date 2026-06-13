@@ -3,16 +3,10 @@
 import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import {
-  ArrowLeft,
-  ChevronLeft,
-  ChevronRight,
-  Check,
-  X,
-} from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTopicReview } from "@/hooks/useTopicReview";
-import { markFlashcard } from "@/hooks/useTopics";
+import { markFlashcard, type SrsQuality } from "@/hooks/useTopics";
 import type { Flashcard } from "@/lib/types";
 import { ApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -26,13 +20,9 @@ import {
 } from "@/components/chinese-flashcard";
 
 /**
- * SRS review session for a topic (Feature 5).
- * Same flip UX as /topics/[slug] but iterates the due-cards queue from
- * GET /api/topics/:slug/review and sends a `quality` score on each mark.
- *
- * Quality mapping (SM-2):
- *   "Chưa thuộc"  → quality 2 (incorrect, easy lapse)
- *   "Đã thuộc"    → quality 4 (correct, mild hesitation)
+ * SRS review session for a topic (Feature 5, v7 4-button rating).
+ * Iterates the due-cards queue from GET /api/topics/:slug/review and sends a
+ * `quality` 0|1|2|3 (Again/Hard/Good/Easy) per card.
  */
 export default function TopicReviewPage({
   params,
@@ -42,16 +32,20 @@ export default function TopicReviewPage({
   const { slug } = use(params);
   // v6 — review only surfaces topics in user's current language, so
   // user.language is a safe proxy for the card variant.
-  const { user } = useAuthContext();
+  const { user, refresh } = useAuthContext();
   const language = user.language ?? "en";
-  // v6 amendment — review is now list-style with `?language=`; thread it.
   const { data, loading, error, refetch } = useTopicReview(slug, language);
 
   const [cards, setCards] = useState<Flashcard[]>([]);
-  const [reviewed, setReviewed] = useState(0); // count of cards user has graded
+  const [reviewed, setReviewed] = useState(0);
   const [index, setIndex] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
+  // v7 — last rating feedback ("Ôn lại sau: X ngày" + XP).
+  const [lastFeedback, setLastFeedback] = useState<{
+    days: number | null;
+    xpEarned: number;
+  } | null>(null);
 
   useEffect(() => {
     if (data) {
@@ -59,6 +53,7 @@ export default function TopicReviewPage({
       setIndex(0);
       setFlipped(false);
       setReviewed(0);
+      setLastFeedback(null);
     }
   }, [data]);
 
@@ -76,7 +71,7 @@ export default function TopicReviewPage({
     setIndex((i) => Math.max(0, i - 1));
   }, []);
 
-  // Keyboard: Space=flip, ArrowLeft/Right=nav
+  // Keyboard: Space=flip, ArrowLeft/Right=nav. Number keys 1-4 = rate.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.target instanceof HTMLInputElement) return;
@@ -93,23 +88,28 @@ export default function TopicReviewPage({
     return () => window.removeEventListener("keydown", onKey);
   }, [goPrev, goNext]);
 
-  async function mark(known: boolean) {
+  async function rate(quality: SrsQuality) {
     if (!current) return;
     const id = current.id;
-    const quality = known ? 4 : 2;
     // optimistic: bump reviewed counter, advance to next card.
     setReviewed((r) => r + 1);
     if (index < total - 1) {
       goNext();
     } else {
-      // Last card: leave index at end, `done` becomes true via reviewed===total.
       setFlipped(false);
     }
     setSavingId(id);
     try {
-      await markFlashcard(id, known, quality);
+      const res = await markFlashcard(id, quality);
+      const days = daysUntil(res.nextReviewAt);
+      setLastFeedback({ days, xpEarned: res.xpEarned });
+      if (res.xpEarned > 0) {
+        toast.success(`+${res.xpEarned} XP · 🔥 ${res.newStreak} ngày`);
+      }
+      // v7 — badges may be newly earned at XP/streak thresholds; refetch /me
+      // so the TopNav + dashboard badge strip pick up the change.
+      void refresh();
     } catch (err) {
-      // revert the counter on failure so the user can try again.
       setReviewed((r) => Math.max(0, r - 1));
       const msg =
         err instanceof ApiError ? err.message : "Không lưu được tiến độ.";
@@ -145,7 +145,6 @@ export default function TopicReviewPage({
   }
   if (!data) return null;
 
-  // Empty queue on initial load: nothing due today.
   if (data.dueCount === 0) {
     return (
       <div className="flex flex-col items-center gap-6 py-12 text-center">
@@ -164,7 +163,6 @@ export default function TopicReviewPage({
     );
   }
 
-  // Done state: user has reviewed all due cards in this session.
   if (done) {
     return (
       <div className="flex flex-col items-center gap-6 py-12 text-center">
@@ -182,6 +180,7 @@ export default function TopicReviewPage({
   }
 
   if (!current) return null;
+  const busy = savingId === current.id;
 
   return (
     <div className="flex flex-col gap-6">
@@ -198,7 +197,6 @@ export default function TopicReviewPage({
 
       {/* Flashcard */}
       <div className="flip-card h-72 w-full">
-        {/* Large clickable flip area; native button to avoid fighting the 3D layout. */}
         <button
           type="button"
           onClick={() => setFlipped((f) => !f)}
@@ -262,29 +260,62 @@ export default function TopicReviewPage({
         </Button>
       </div>
 
-      {/* Mark buttons */}
-      <div className="grid grid-cols-2 gap-3">
+      {/* v7 — 4-button SRS rating */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Button
           variant="destructive"
-          onClick={() => mark(false)}
-          disabled={savingId === current.id}
+          onClick={() => rate(0)}
+          disabled={busy}
           className="w-full"
         >
-          <X className="h-4 w-4" />
-          Chưa thuộc
+          Again
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => rate(1)}
+          disabled={busy}
+          className="w-full border-orange-500 text-orange-600 hover:bg-orange-50 hover:text-orange-700 dark:hover:bg-orange-950"
+        >
+          Hard
+        </Button>
+        <Button
+          variant="default"
+          onClick={() => rate(2)}
+          disabled={busy}
+          className="w-full"
+        >
+          Good
         </Button>
         <Button
           variant="success"
-          onClick={() => mark(true)}
-          disabled={savingId === current.id}
+          onClick={() => rate(3)}
+          disabled={busy}
           className="w-full"
         >
-          <Check className="h-4 w-4" />
-          Đã thuộc
+          Easy
         </Button>
       </div>
+
+      {/* v7 — feedback after last rating */}
+      {lastFeedback && lastFeedback.days !== null && (
+        <p className="text-center text-sm text-[var(--muted-foreground)]">
+          Ôn lại sau: {lastFeedback.days} ngày
+          {lastFeedback.xpEarned > 0 && (
+            <span className="ml-2">· +{lastFeedback.xpEarned} XP ⭐</span>
+          )}
+        </p>
+      )}
     </div>
   );
+}
+
+/** Difference in whole days between an ISO timestamp and now (UTC-floored). */
+function daysUntil(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return null;
+  const diffMs = t - Date.now();
+  return Math.max(0, Math.round(diffMs / (24 * 60 * 60 * 1000)));
 }
 
 function BackLink({ slug }: { slug: string }) {

@@ -174,11 +174,12 @@ export default function ReadingExercisePage({
         </CardContent>
       </Card>
 
-      {/* v3 — highlight 1–5 words to add to vocabulary. Disabled after submit. */}
+      {/* v7 — highlight 1–5 words to mine into vocab. Disabled after submit. */}
       <SelectionPopover
         containerRef={passageRef}
         enabled={!result}
         passageText={data.passage}
+        language={data.language}
       />
 
 

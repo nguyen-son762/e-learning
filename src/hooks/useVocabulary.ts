@@ -10,6 +10,8 @@ import type {
   VocabularyFavoriteResponse,
   VocabularyProgressResponse,
   DeleteResponse,
+  MineVocabularyInput,
+  MineVocabularyResponse,
 } from "@/lib/types";
 
 /** Build a stable query string from optional list params (empty params dropped). */
@@ -96,6 +98,21 @@ export function setVocabularyFavorite(
     `/api/vocabulary/${encodeURIComponent(id)}/favorite`,
     { method: "PUT", body: { isFavorite } },
   );
+}
+
+/**
+ * v7 — POST /api/vocabulary/mine → wrapped `{ item: VocabularyEntry }`.
+ * `language` is REQUIRED — pass the reading screen's language explicitly
+ * (do NOT inherit from user.language). The created entry has `meaning: ""`;
+ * surface a "Thêm nghĩa" CTA in /vocabulary for entries where meaning is empty.
+ */
+export function mineVocabulary(
+  input: MineVocabularyInput,
+): Promise<MineVocabularyResponse> {
+  return fetchJson<MineVocabularyResponse>("/api/vocabulary/mine", {
+    method: "POST",
+    body: input,
+  });
 }
 
 // PUT /api/vocabulary/:id/progress → { id, known }

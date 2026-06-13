@@ -12,6 +12,13 @@ import {
   parseLanguageQuery,
   type Language,
 } from "../lib/language";
+import {
+  wireToSm2Quality,
+  xpForQuality,
+  computeNewStreak,
+  detectNewlyEarnedBadges,
+  type WireQuality,
+} from "../lib/gamification";
 
 // v6 amendment — 3-step Topic loader. NEVER raises LANGUAGE_NOT_SELECTED.
 // Returns the Topic row resolved per the amendment rule. Callers that need includes (flashcards,
@@ -113,9 +120,10 @@ export async function getTopic(req: Request, res: Response): Promise<void> {
   });
 }
 
+// v7 — wire quality is the 4-button enum 0..3 (Again/Hard/Good/Easy). Mapped to SM-2 0/3/4/5 below.
 const progressSchema = z.object({
   known: z.boolean(),
-  quality: z.number().int().min(0).max(5).optional(),
+  quality: z.number().int().min(0).max(3).optional(),
 });
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -175,7 +183,13 @@ function computeSrs(input: SrsInput): SrsOutput {
   };
 }
 
-// PUT /api/flashcards/:id/progress -> { flashcardId, known, updatedAt, nextReviewAt }
+// PUT /api/flashcards/:id/progress -> { flashcardId, known, updatedAt, nextReviewAt, xpEarned, newStreak }
+// v7:
+//   - quality is wire-level 0..3 (Again/Hard/Good/Easy); default 2 (Good). Mapped to SM-2 0/3/4/5.
+//   - Awards XP (Again=0/Hard=5/Good=10/Easy=15) into User.totalXP.
+//   - Updates User.streak by the UTC-day rule; Again (0) does not advance the streak but DOES
+//     refresh lastStudiedAt.
+//   - Persists newly-earned badges (first-review / week-streak / century-xp) once each.
 export async function updateFlashcardProgress(
   req: Request,
   res: Response
@@ -183,7 +197,8 @@ export async function updateFlashcardProgress(
   const userId = req.userId!;
   const { id } = req.params;
   const body = parseBody(progressSchema, req.body);
-  const quality = body.quality ?? 3;
+  const wireQuality: WireQuality = (body.quality ?? 2) as WireQuality;
+  const sm2Quality = wireToSm2Quality(wireQuality);
 
   const card = await prisma.flashcard.findUnique({ where: { id } });
   if (!card) {
@@ -200,35 +215,88 @@ export async function updateFlashcardProgress(
     oldEaseFactor: existing?.easeFactor ?? 2.5,
     oldRepetitions: existing?.repetitions ?? 0,
     known: body.known,
-    quality,
+    quality: sm2Quality,
     now,
   });
 
-  const row = await prisma.flashcardProgress.upsert({
-    where: { userId_flashcardId: { userId, flashcardId: id } },
-    update: {
-      known: body.known,
-      interval: srs.interval,
-      easeFactor: srs.easeFactor,
-      repetitions: srs.repetitions,
-      nextReviewAt: srs.nextReviewAt,
-    },
-    create: {
-      userId,
-      flashcardId: id,
-      known: body.known,
-      interval: srs.interval,
-      easeFactor: srs.easeFactor,
-      repetitions: srs.repetitions,
-      nextReviewAt: srs.nextReviewAt,
-    },
+  // Detect "first ever review" BEFORE we touch any gamification state: any prior
+  // FlashcardProgress row for this user means they've reviewed at least once.
+  const firstReviewEver =
+    (await prisma.flashcardProgress.count({ where: { userId } })) === 0;
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    throw new AppError("UNAUTHENTICATED", "Token không hợp lệ hoặc đã hết hạn.");
+  }
+
+  const xpEarned = xpForQuality(wireQuality);
+  const newStreak = computeNewStreak({
+    currentStreak: user.streak,
+    lastStudiedAt: user.lastStudiedAt,
+    quality: wireQuality,
+    now,
   });
+  const newTotalXP = user.totalXP + xpEarned;
+
+  // Upsert flashcard progress + user gamification fields in a transaction so partial failures
+  // don't leave XP awarded but no SRS row written (or vice versa).
+  const [row] = await prisma.$transaction([
+    prisma.flashcardProgress.upsert({
+      where: { userId_flashcardId: { userId, flashcardId: id } },
+      update: {
+        known: body.known,
+        interval: srs.interval,
+        easeFactor: srs.easeFactor,
+        repetitions: srs.repetitions,
+        nextReviewAt: srs.nextReviewAt,
+      },
+      create: {
+        userId,
+        flashcardId: id,
+        known: body.known,
+        interval: srs.interval,
+        easeFactor: srs.easeFactor,
+        repetitions: srs.repetitions,
+        nextReviewAt: srs.nextReviewAt,
+      },
+    }),
+    prisma.user.update({
+      where: { id: userId },
+      data: {
+        streak: newStreak,
+        totalXP: newTotalXP,
+        lastStudiedAt: now,
+      },
+    }),
+  ]);
+
+  // Badge persistence. Detect any newly-eligible badges, then insert each with a unique-constraint
+  // safety net so a concurrent request can't double-write the same badge.
+  const alreadyEarnedRows = await prisma.earnedBadge.findMany({
+    where: { userId },
+    select: { badgeId: true },
+  });
+  const alreadyEarned = new Set(alreadyEarnedRows.map((r) => r.badgeId));
+  const newlyEarned = detectNewlyEarnedBadges({
+    alreadyEarned,
+    totalXP: newTotalXP,
+    streak: newStreak,
+    firstReviewEver,
+  });
+  if (newlyEarned.length > 0) {
+    await prisma.earnedBadge.createMany({
+      data: newlyEarned.map((badgeId) => ({ userId, badgeId })),
+      skipDuplicates: true,
+    });
+  }
 
   res.status(200).json({
     flashcardId: row.flashcardId,
     known: row.known,
     updatedAt: row.updatedAt.toISOString(),
     nextReviewAt: row.nextReviewAt ? row.nextReviewAt.toISOString() : null,
+    xpEarned,
+    newStreak,
   });
 }
 

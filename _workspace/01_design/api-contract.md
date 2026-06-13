@@ -1,5 +1,23 @@
 # API Contract — Multi-Language Learning App (MVP)
 
+> **v7 (2026-06-13): + SRS 4-button rating, Streak & XP gamification, Sentence Mining.**
+> - **Feature A — SRS 4-button rating (enhancement to v3 `PUT /api/flashcards/:id/progress`).** The wire `quality` field is **redefined** as a 4-value enum `0 | 1 | 2 | 3` meaning **Again=0, Hard=1, Good=2, Easy=3** (NOT raw SM-2 0–5 anymore). The backend maps these into SM-2 internal quality on the way in: `Again→0, Hard→3, Good→4, Easy→5`. `quality` stays **optional** (default = `2` Good, equivalent to SM-2 `4` — was `3` in v3). This is a **wire-shape breaking change for clients that previously sent quality=4 or 5**; all v6 frontends are migrated in lockstep with v7. The response gains two additive fields: `xpEarned: number` and `newStreak: number`.
+> - **Feature B — Streak & XP gamification (NEW).** `User` gains three persisted fields: `streak: number` (consecutive-day study streak, integer ≥ 0), `lastStudiedAt: string | null` (ISO 8601 UTC of last SRS-rating event), `totalXP: number` (lifetime XP, integer ≥ 0), plus a **derived** `badges: Badge[]` (computed from totalXP + streak + activity — see §Gamification rules). These four fields are returned on `GET /api/auth/me`, `POST /api/auth/login`, and `POST /api/auth/register` (always `0/null/0/[]` on register).
+>   - **New shape `Badge`:** `{ id: string, label: string, earnedAt: string }` where `id ∈ { "first-review", "week-streak", "century-xp" }`, `label` is a Vietnamese display string, `earnedAt` is the ISO timestamp at which the badge first became eligible (persisted on first detection — once earned, never lost).
+>   - **XP accrual rule:** every SRS rating event awards XP — `Again=0, Hard=5, Good=10, Easy=15`. Awarded server-side inside the `PUT /api/flashcards/:id/progress` handler; the response echoes the `xpEarned` for that event AND the resulting `newStreak`.
+>   - **Streak rule:** if the user's `lastStudiedAt` is on the previous UTC calendar day → `streak += 1`. If it's the same UTC day → unchanged. Otherwise → `streak = 1` (reset and count today). Streak only advances on a quality ≥ Hard (i.e. ≥ 1 on the 0–3 scale); rating `Again` (0) does NOT advance the streak but DOES update `lastStudiedAt`.
+>   - **Built-in badges (server-detected, persisted on first earn):**
+>     | id | label (Vietnamese) | trigger |
+>     |----|--------------------|---------|
+>     | `first-review` | "Đánh giá đầu tiên" | the user's first ever `PUT /api/flashcards/:id/progress` call (any quality, including Again) |
+>     | `week-streak` | "7 ngày liên tiếp" | `streak >= 7` for the first time |
+>     | `century-xp` | "100 XP" | `totalXP >= 100` for the first time |
+>   - **`GET /api/dashboard`** response gains `streak`, `totalXP`, `dueToday: number` (count of the authed user's flashcards — across the resolved language — whose `FlashcardProgress.nextReviewAt <= now()` **OR** that have no progress row yet, scoped to topics in the resolved language), and `badges: Badge[]`. `dueToday` is language-scoped exactly like every other dashboard field *(v6)*.
+> - **Feature C — Sentence Mining (NEW endpoint).** `POST /api/vocabulary/mine` — quick-capture from reading: `{ word, exampleSentence, language }` → server auto-finds-or-creates a per-user, per-language Topic `(slug: "__mined__", title: "Mined", titleVi: "Mỏ từ vựng")` owned by the caller and creates a new `VocabularyEntry` with `exampleSentence` set and `language` matching. Returns `201 { item: VocabularyEntry }`. Errors: 400 `VALIDATION_ERROR` if `word` or `exampleSentence` missing/empty. The mined Topic is a regular user-created topic (`userId = req.user.id`) — it shows up in `GET /api/topics` (and the user may rename/delete it like any other), but the auto-create logic always targets the slug `__mined__` for that user+language, so re-mining always lands in the same bucket as long as it exists. If the user deleted the previous `__mined__` topic, a new one is created on the next mining call.
+> - **`User` shape changes are additive — all four new fields are non-optional in the response.** Pre-v7 rows backfill to `streak: 0, lastStudiedAt: null, totalXP: 0`. `badges` is derived per-request from `totalXP + streak + persisted earned-badge log` (see `data-model.md` v7 for the persistence shape).
+> - **Backward compatibility:** every v6 endpoint still works. Pre-v7 frontends that send `quality ∈ [0,5]` to `PUT /api/flashcards/:id/progress` are **NOT** supported — quality is now strictly `0..3`. Clients should ship v7 frontend + v7 backend together.
+> Same conventions (camelCase, `{items,total}` list wrapper, `{error:{code,message}}`, Bearer auth, language gating from v6). See v7 DIFF at end.
+>
 > **v6 (2026-06-13): + Chinese Learning Module (multi-language).**
 > - New enum-like wire value `Language = "en" | "zh"` (lowercase). The app now ships English **and** Mandarin Chinese (Simplified) side by side.
 > - `User` gains `language: "en" | "zh" | null` — `null` = not yet chosen → frontend redirects to `/choose-language` after login. Returned on `GET /api/auth/me`, `POST /api/auth/register` (always `null` on register), `POST /api/auth/login` (the stored value, possibly `null`).
@@ -89,8 +107,17 @@ Language = "en" | "zh"
 
 User        { id: string, email: string, name: string, role: "USER" | "ADMIN",
               language: Language | null,                          // (v6) null = not yet chosen → frontend redirects to /choose-language
+              streak: number,                                     // (v7) consecutive-day study streak; integer >= 0; backfill 0 for pre-v7 rows
+              lastStudiedAt: string | null,                       // (v7) ISO 8601 of last SRS rating event; null if never reviewed
+              totalXP: number,                                    // (v7) lifetime XP; integer >= 0; backfill 0 for pre-v7 rows
+              badges: Badge[],                                    // (v7) earned badges (server-detected, persisted); empty array if none earned yet
               createdAt: string }                                 // role added v5
 AuthResponse{ token: string, user: User }
+
+// (v7) Gamification badge — server-detected achievement, persisted on first earn (once earned, never lost).
+Badge       { id: "first-review" | "week-streak" | "century-xp",
+              label: string,                                      // Vietnamese display label, e.g. "Đánh giá đầu tiên"
+              earnedAt: string }                                  // ISO 8601 UTC of when this badge was first detected
 
 TopicSummary{ id: string, slug: string, title: string, titleVi: string,
               description: string | null, flashcardCount: number,
@@ -163,10 +190,11 @@ Response 201:
   "token": "eyJhbGciOi...",
   "user": { "id": "ckv1...", "email": "an@example.com", "name": "An Nguyen",
             "role": "USER", "language": null,
+            "streak": 0, "lastStudiedAt": null, "totalXP": 0, "badges": [],
             "createdAt": "2026-06-09T08:30:00.000Z" }
 }
 ```
-`role` *(v5)* is always `"USER"` on register — admins are promoted out-of-band (seed/DB). `language` *(v6)* is always `null` on register — the frontend MUST redirect new users to `/choose-language` immediately after auth (handled in the `(app)` shell guard).
+`role` *(v5)* is always `"USER"` on register — admins are promoted out-of-band (seed/DB). `language` *(v6)* is always `null` on register — the frontend MUST redirect new users to `/choose-language` immediately after auth (handled in the `(app)` shell guard). `streak`, `lastStudiedAt`, `totalXP`, `badges` *(v7)* are always `0, null, 0, []` on register — gamification state starts empty.
 Errors: 400 `VALIDATION_ERROR`, 409 `EMAIL_TAKEN`.
 
 ---
@@ -184,10 +212,16 @@ Response 200:
   "token": "eyJhbGciOi...",
   "user": { "id": "ckv1...", "email": "an@example.com", "name": "An Nguyen",
             "role": "USER", "language": "en",
+            "streak": 5, "lastStudiedAt": "2026-06-12T22:15:00.000Z",
+            "totalXP": 120,
+            "badges": [
+              { "id": "first-review", "label": "Đánh giá đầu tiên", "earnedAt": "2026-06-01T08:30:00.000Z" },
+              { "id": "century-xp",  "label": "100 XP",            "earnedAt": "2026-06-10T19:45:00.000Z" }
+            ],
             "createdAt": "2026-06-09T08:30:00.000Z" }
 }
 ```
-`role` *(v5)* reflects the user's stored role at login time (`"USER"` or `"ADMIN"`). `language` *(v6)* reflects the user's stored language (`"en"`, `"zh"`, or `null` if never chosen). When `null`, frontend MUST redirect to `/choose-language` before letting the user into the `(app)` shell.
+`role` *(v5)* reflects the user's stored role at login time (`"USER"` or `"ADMIN"`). `language` *(v6)* reflects the user's stored language (`"en"`, `"zh"`, or `null` if never chosen). When `null`, frontend MUST redirect to `/choose-language` before letting the user into the `(app)` shell. `streak`, `lastStudiedAt`, `totalXP`, `badges` *(v7)* reflect the user's current gamification state — see §Gamification rules below.
 Errors: 400 `VALIDATION_ERROR`, 401 `INVALID_CREDENTIALS`.
 
 ---
@@ -200,10 +234,18 @@ Response 200:
 ```json
 { "user": { "id": "ckv1...", "email": "an@example.com", "name": "An Nguyen",
             "role": "ADMIN", "language": "zh",
+            "streak": 12, "lastStudiedAt": "2026-06-13T03:00:00.000Z",
+            "totalXP": 240,
+            "badges": [
+              { "id": "first-review", "label": "Đánh giá đầu tiên", "earnedAt": "2026-06-01T08:30:00.000Z" },
+              { "id": "week-streak", "label": "7 ngày liên tiếp",   "earnedAt": "2026-06-07T19:00:00.000Z" },
+              { "id": "century-xp",  "label": "100 XP",             "earnedAt": "2026-06-10T19:45:00.000Z" }
+            ],
             "createdAt": "2026-06-09T08:30:00.000Z" } }
 ```
 - `role` *(v5)* — `"USER"` | `"ADMIN"`. The frontend uses this to (a) conditionally render the "Quản trị" nav item in the authed shell, and (b) guard `/admin/*` routes client-side. The backend STILL enforces admin authority on every `/api/reading-exercises` write endpoint — the client guard is UX, not security.
 - `language` *(v6)* — `"en"` | `"zh"` | `null`. `null` = user has never picked a learning language. The `(app)` layout MUST redirect to `/choose-language` whenever `language === null` (the user can still hit `/choose-language` even when set, to switch).
+- `streak`, `lastStudiedAt`, `totalXP`, `badges` *(v7)* — gamification state. The TopNav uses `streak` + `totalXP` for the always-visible counter; `/dashboard` uses `badges` for the achievements strip. Badges are **language-agnostic** (lifetime across both `en` and `zh`); streak and XP are also language-agnostic (one rating in any language advances the global streak).
 Errors: 401 `UNAUTHENTICATED`.
 
 ---
@@ -217,12 +259,16 @@ Request body:
 ```
 Field types: `language: "en" | "zh"` — required. Any other value → `400 VALIDATION_ERROR`.
 Behavior: sets the caller's `User.language` to the given value. Idempotent (re-setting the same value succeeds). Switching is allowed at any time — the user's existing progress/vocabulary stays intact (it's all language-scoped at the row level), so a subsequent switch back also "restores" the previous-language view automatically.
-Response 200 — wraps the updated `User` the same way `GET /api/auth/me` does:
+Response 200 — wraps the updated `User` the same way `GET /api/auth/me` does (gamification fields *(v7)* included):
 ```json
 {
   "user": {
     "id": "ckv1...", "email": "an@example.com", "name": "An Nguyen",
     "role": "USER", "language": "zh",
+    "streak": 12, "lastStudiedAt": "2026-06-13T03:00:00.000Z",
+    "totalXP": 240, "badges": [
+      { "id": "week-streak", "label": "7 ngày liên tiếp", "earnedAt": "2026-06-07T19:00:00.000Z" }
+    ],
     "createdAt": "2026-06-09T08:30:00.000Z"
   }
 }
@@ -301,28 +347,48 @@ Response 200 — `TopicDetail` (single object, NOT wrapped):
 ---
 
 ### PUT /api/flashcards/:id/progress
-Consumed by: `/topics/[slug]` (mark thuộc / chưa thuộc), `/topics/[slug]/review` (SRS review session) *(v3)*
+Consumed by: `/topics/[slug]` (mark thuộc / chưa thuộc), `/topics/[slug]/review` (SRS review session) *(v3)*, `/vocabulary/study` (when mining-topic flashcards are studied)
 Auth: **yes**
 Path param: `id` (Flashcard.id)
 Request body:
 ```json
-{ "known": true, "quality": 4 }
+{ "known": true, "quality": 2 }
 ```
 Field types:
 - `known: boolean` (required).
-- `quality?: number` *(v3)* — integer in `[0,5]`. **Optional**; default `3` if omitted. Feeds the SM-2 spaced-repetition scheduler server-side to recompute `interval`, `easeFactor`, `repetitions`, and `nextReviewAt` on the (userId, flashcardId) progress row. When omitted, the row is upserted to the given `known` value and SRS fields are still updated using the default quality so the card re-enters the review queue at a sane time.
-Behavior: upserts the (userId, flashcardId) progress row. `known` is set from the body; SRS fields (`interval`, `easeFactor`, `repetitions`, `nextReviewAt`) are recomputed via SM-2 from `quality` (treat `known:false` as quality ≤ 2 if `quality` omitted, `known:true` as default 3).
+- `quality?: number` *(v7 — redefined; was v3's 0–5 SM-2)* — integer in `[0,3]` representing the **4-button rating**: `0 = Again, 1 = Hard, 2 = Good, 3 = Easy`. **Optional**; default `2` (Good) if omitted. The backend maps this enum into SM-2 internal quality: `Again→0, Hard→3, Good→4, Easy→5`, then runs SM-2 to recompute `interval`, `easeFactor`, `repetitions`, and `nextReviewAt`. Any value outside `[0,3]` → `400 VALIDATION_ERROR` (this is a **wire-shape breaking change from v3** — v3 callers that sent `quality: 4` or `5` will now fail validation; v7 frontend ships in lockstep).
+
+Behavior: upserts the (userId, flashcardId) progress row. `known` is set from the body; SRS fields (`interval`, `easeFactor`, `repetitions`, `nextReviewAt`) are recomputed via SM-2 from the **mapped** quality. *(v7)* Also: awards XP (`Again=0, Hard=5, Good=10, Easy=15`), advances or resets the user's `streak`, updates `lastStudiedAt = now()`, and detects newly-earned badges. All gamification side-effects happen in the same transaction as the SRS update so the response is consistent.
+
+**Streak update rule *(v7)*:**
+- Compute the UTC calendar date of `lastStudiedAt` and of `now()`.
+- If the dates are equal → `streak` unchanged.
+- Else if `lastStudiedAt` is the previous UTC calendar day → `streak += 1` (advance), **only if `quality >= 1` (Hard or better)**. Rating `Again` (0) updates `lastStudiedAt` but does NOT advance the streak.
+- Else → `streak = (quality >= 1 ? 1 : 0)` (reset; today counts only if user rated at least Hard).
+- `lastStudiedAt = now()` is always set, regardless of quality.
+
+**XP rule *(v7)*:** `xpEarned = [0, 5, 10, 15][quality]`. `totalXP += xpEarned` atomically.
+
+**Badge detection *(v7)*:** after applying XP and streak updates, check the three triggers (`first-review`, `week-streak`, `century-xp`) — for any that newly fire AND have not been previously earned, persist an `EarnedBadge` row with `earnedAt = now()`. Badges, once earned, are never lost or re-emitted.
+
 Response 200:
 ```json
 {
   "flashcardId": "fc_1",
   "known": true,
   "updatedAt": "2026-06-09T09:00:00.000Z",
-  "nextReviewAt": "2026-06-11T09:00:00.000Z"
+  "nextReviewAt": "2026-06-11T09:00:00.000Z",
+  "xpEarned": 10,
+  "newStreak": 6
 }
 ```
-- `nextReviewAt` *(v3)*: ISO 8601 timestamp when this card is next due. `null` is allowed if the scheduler chooses not to queue the card (e.g. quality=5 on a long-mature card per implementation choice), but the default contract is a non-null timestamp.
-Errors: 400 `VALIDATION_ERROR` (e.g. `quality` not in 0–5), 401 `UNAUTHENTICATED`, 404 `NOT_FOUND` (card id unknown).
+- `nextReviewAt` *(v3)*: ISO 8601 timestamp when this card is next due. `null` is allowed if the scheduler chooses not to queue the card, but the default contract is a non-null timestamp.
+- `xpEarned` *(v7)*: integer XP awarded by THIS rating event (`0 | 5 | 10 | 15`). Frontend uses this for the "+X XP" toast / particle effect on the review screen.
+- `newStreak` *(v7)*: integer ≥ 0 — the user's streak AFTER this rating is applied. Mirrors `user.streak` after the mutation; surfaced here so the client can update the streak counter without a separate `/me` refetch.
+
+Note: the response does NOT include `badges` — when a badge is newly earned, the frontend detects it by refetching `/api/auth/me` (or by comparing `newStreak`/cumulative XP against thresholds client-side and confirming via `/me`). This keeps the hot-path response small.
+
+Errors: 400 `VALIDATION_ERROR` (`quality` not in `[0,3]`, missing `known`), 401 `UNAUTHENTICATED`, 404 `NOT_FOUND` (card id unknown).
 
 ---
 
@@ -560,6 +626,14 @@ Response 200 (single object; contains nested lists that DO use the `{ items, tot
     "overallCompletionPercent": 26,
     "readingAttemptCount": 5
   },
+  "streak": 12,
+  "totalXP": 240,
+  "dueToday": 17,
+  "badges": [
+    { "id": "first-review", "label": "Đánh giá đầu tiên", "earnedAt": "2026-06-01T08:30:00.000Z" },
+    { "id": "week-streak", "label": "7 ngày liên tiếp",   "earnedAt": "2026-06-07T19:00:00.000Z" },
+    { "id": "century-xp",  "label": "100 XP",             "earnedAt": "2026-06-10T19:45:00.000Z" }
+  ],
   "topicProgress": {
     "items": [
       { "id": "tpc_travel", "slug": "travel", "title": "Travel", "titleVi": "Du lịch",
@@ -583,6 +657,8 @@ Notes:
 - `recentAttempts.items[*]` extend `ReadingAttempt` with `exerciseSlug` and `exerciseTitle` for direct linking; capped server-side (e.g. latest 5) but `total` = lifetime attempt count **within the resolved language** *(v6)*.
 - `overallCompletionPercent` = round(totals.knownCount / totals.flashcardCount * 100), 0 if no cards. **Computed only over the resolved language's content** *(v6)*.
 - `totals.readingAttemptCount` *(v6)* counts only attempts on exercises of the resolved language.
+- `streak`, `totalXP`, `badges` *(v7)* — mirror the user's gamification state (same values as `GET /api/auth/me`). **Language-agnostic** — these are lifetime/global counters that do NOT get scoped by `?language=`. Surfaced here so the dashboard can render the streak/XP card and badge strip without a second `/me` refetch.
+- `dueToday: number` *(v7)* — count of flashcards in topics of the **resolved language** whose `FlashcardProgress.nextReviewAt <= now()` **OR** that have no progress row yet (never reviewed = always due). Mirrors the logic in `GET /api/topics/:slug/review` but summed across **all** topics in the resolved language (seeded + user-created). Frontend renders the "n cards due" CTA on the dashboard.
 Errors: 401 `UNAUTHENTICATED`, 400 `VALIDATION_ERROR` *(v6 — invalid `language`)*, 403 `LANGUAGE_NOT_SELECTED` *(v6)*.
 
 ---
@@ -904,6 +980,100 @@ Errors: 401 `UNAUTHENTICATED`, 400 `VALIDATION_ERROR` *(v6)*, 403 `LANGUAGE_NOT_
 
 ---
 
+### POST /api/vocabulary/mine  *(v7 — Sentence Mining)*
+Consumed by: `/reading/[slug]` (highlight-to-mine action button in the passage selection toolbar)
+Auth: **yes**
+Request body:
+```json
+{ "word": "ubiquitous", "exampleSentence": "Smartphones are ubiquitous nowadays.", "language": "en" }
+```
+Field types:
+- `word: string` — trimmed, non-empty; **required**.
+- `exampleSentence: string` — trimmed, non-empty; **required** (this is the differentiator from `POST /api/vocabulary` — mining always carries the source sentence).
+- `language: "en" | "zh"` — **required** (no inherit-from-user-language shortcut here — the reading screen always knows which language it's mining from; explicit is safer than implicit for this hot-path).
+
+Behavior:
+1. Resolve (or create) the caller's per-language **mined-topic bucket**: find the Topic with `userId = req.user.id AND slug = "__mined__" AND language = <body.language>`. If absent, create it with `{ slug: "__mined__", title: "Mined", titleVi: "Mỏ từ vựng", description: null, userId: req.user.id, language: body.language }`.
+2. Create a new `VocabularyEntry` owned by the caller with `word`, `exampleSentence`, `language` from the body. All other vocabulary fields default to their normal values (`meaning = ""` empty string — the user may edit later from `/vocabulary/[id]/edit`; arrays default `[]`; flags default `false`; `pinyin`/`hskLevel`/`cefrLevel` all `null` since they're optional on mine). The entry is NOT associated with the mined-topic via a hard FK (vocabulary entries are not linked to topics in v6 — the topic exists for surfacing in `GET /api/topics` so the user can see they have mined items, but the entry lives in `VocabularyEntry` and shows up in `GET /api/vocabulary` as normal).
+3. Both the topic upsert and the entry create run in a single transaction. If the topic already existed, only the entry is created.
+
+Response 201 — **wraps the created entry in `{ item }`** (this differs from `POST /api/vocabulary` which returns the bare entry — the wrap is a deliberate v7 choice so the frontend hook can distinguish the mining create from regular create at the type level and emit a different toast):
+```json
+{
+  "item": {
+    "id": "voc_mined_1", "userId": "ckv1...", "word": "ubiquitous",
+    "meaning": "",
+    "pronunciation": null, "partOfSpeech": null,
+    "synonyms": [], "antonyms": [],
+    "exampleSentence": "Smartphones are ubiquitous nowadays.",
+    "notes": null, "tags": [],
+    "cefrLevel": null, "pinyin": null, "hskLevel": null,
+    "language": "en",
+    "isFavorite": false, "known": false,
+    "createdAt": "2026-06-13T10:00:00.000Z", "updatedAt": "2026-06-13T10:00:00.000Z"
+  }
+}
+```
+Notes:
+- `meaning` is intentionally **empty string** (not null) on mine — the schema requires `meaning` to be non-null, so mining seeds it empty and the user fills it later. The frontend MUST surface a "thêm nghĩa" call-to-action on the mined entry in `/vocabulary`.
+- The mined-topic (`slug: "__mined__"`) is a regular user-created Topic — it shows up in `GET /api/topics` and is fully editable/deletable like any other. If the user deletes it, the next mine call recreates it.
+- This endpoint does NOT touch the v7 SRS/XP/streak/badges pipeline — mining is a passive capture, not an active study event. XP is awarded only on `PUT /api/flashcards/:id/progress`.
+
+Errors: 400 `VALIDATION_ERROR` (missing/empty `word`, missing/empty `exampleSentence`, invalid `language`), 401 `UNAUTHENTICATED`.
+
+---
+
+## Gamification rules  *(v7)*
+
+Centralized reference for backend (so streak/XP/badge logic stays consistent across endpoints) and frontend (so client-side optimistic updates stay in sync with the server).
+
+### XP scoring
+
+| Rating wire value | Label (VN) | xpEarned | SM-2 mapped quality |
+|-------------------|-----------|----------|---------------------|
+| `0` | "Quên" (Again) | 0 | 0 |
+| `1` | "Khó" (Hard)   | 5 | 3 |
+| `2` | "Tốt" (Good)   | 10 | 4 |
+| `3` | "Dễ" (Easy)    | 15 | 5 |
+
+### Streak machine
+
+Triggered on every `PUT /api/flashcards/:id/progress` (NOT on `PUT /api/vocabulary/:id/progress` — v7 only wires streak to flashcard SRS ratings):
+
+```
+prev = user.lastStudiedAt   (ISO; may be null)
+prevDate = UTC calendar date of prev (or null)
+nowDate  = UTC calendar date of now()
+
+if prevDate == nowDate:               streak unchanged
+elif prevDate == nowDate - 1 day:     streak += 1   (only if quality >= 1; Again does not advance)
+else:                                  streak = (quality >= 1 ? 1 : 0)
+
+user.lastStudiedAt = now()            (always, even for quality=0)
+user.totalXP += xpEarned
+```
+
+### Badge triggers (server-side, idempotent — once earned, persisted forever)
+
+| id | Trigger (evaluated after streak + XP update) |
+|----|----------------------------------------------|
+| `first-review` | the user's FIRST EVER `PUT /api/flashcards/:id/progress` (any quality, even Again). Detection: if no EarnedBadge row with `id="first-review"` exists for this user → create. |
+| `week-streak` | `user.streak >= 7` AND no EarnedBadge row with `id="week-streak"` → create. |
+| `century-xp` | `user.totalXP >= 100` AND no EarnedBadge row with `id="century-xp"` → create. |
+
+Labels (Vietnamese, server-side constant — keep here so frontend doesn't fork the strings):
+- `first-review` → `"Đánh giá đầu tiên"`
+- `week-streak` → `"7 ngày liên tiếp"`
+- `century-xp` → `"100 XP"`
+
+### Language scope
+
+Gamification fields (`streak`, `totalXP`, `badges`) are **language-agnostic** — a rating in `en` and a rating in `zh` both count toward the same streak. This is intentional: the v7 feature brief models gamification as a learner-level habit, not a per-language ladder. Future v8 may introduce per-language streaks if needed.
+
+`dueToday` on `GET /api/dashboard` *(v7)* IS language-scoped (same `?language=` resolution as the rest of the dashboard) — it's a "what should I review next in my current language" CTA, not a global counter.
+
+---
+
 ## Endpoint ↔ screen cross-check (no orphans)
 
 | Endpoint | Consumed by |
@@ -937,8 +1107,58 @@ Errors: 401 `UNAUTHENTICATED`, 400 `VALIDATION_ERROR` *(v6)*, 403 `LANGUAGE_NOT_
 | PUT /api/vocabulary/:id/favorite *(v2)* | /vocabulary |
 | PUT /api/vocabulary/:id/progress *(v2)* | /vocabulary/study |
 | GET /api/vocabulary/tags *(v2)* | /vocabulary |
+| POST /api/vocabulary/mine *(v7)* | /reading/[slug] (highlight-to-mine action) |
 
 No async/long-running operations in MVP — all responses are synchronous (no 202 flows).
+
+---
+
+## DIFF — v7 (SRS 4-button rating, Streak & XP gamification, Sentence Mining)
+
+### Shape changes
+
+- **`User`** gains four fields (all non-optional in the response):
+  - `streak: number` — integer ≥ 0; default `0` on register; backfill `0` for pre-v7 rows.
+  - `lastStudiedAt: string | null` — ISO 8601 UTC; default `null` on register; backfill `null` for pre-v7 rows.
+  - `totalXP: number` — integer ≥ 0; default `0` on register; backfill `0` for pre-v7 rows.
+  - `badges: Badge[]` — array (may be empty); derived per-request from `EarnedBadge` rows for this user (see `data-model.md` v7).
+
+- **New shape `Badge`** — `{ id: "first-review" | "week-streak" | "century-xp", label: string, earnedAt: string }`. Labels are Vietnamese, frozen by the server.
+
+### Endpoint changes
+
+| Endpoint | Change |
+|----------|--------|
+| `POST /api/auth/register` | response `user` now includes `streak, lastStudiedAt, totalXP, badges` (always `0, null, 0, []`) |
+| `POST /api/auth/login` | response `user` includes the four gamification fields (current values) |
+| `GET /api/auth/me` | response `user` includes the four gamification fields |
+| `PUT /api/users/me/language` | response `user` includes the four gamification fields (additive — pre-existing endpoint, no behavior change) |
+| `PUT /api/flashcards/:id/progress` | **`quality` redefined** as `0..3` (Again/Hard/Good/Easy) — NOT `0..5` SM-2 anymore. Backend maps `0→0, 1→3, 2→4, 3→5` internally. Default `quality` is now `2` (Good). Response gains `xpEarned: number` and `newStreak: number`. **Wire-breaking for v3–v6 clients that sent `quality > 3`.** |
+| `GET /api/dashboard` | response gains `streak, totalXP, badges` (language-agnostic) and `dueToday: number` (language-scoped — same `?language=` resolution as the rest of the dashboard) |
+
+### New endpoint
+
+| Method + path | Request | Success response |
+|---------------|---------|------------------|
+| `POST /api/vocabulary/mine` | body: `{ word, exampleSentence, language }` | 201 `{ item: VocabularyEntry }` |
+
+### Decisions to honor (v7)
+
+- **`quality` is now a 4-button enum, not raw SM-2.** Anything outside `[0,3]` → `400 VALIDATION_ERROR`. The mapping `Again→0, Hard→3, Good→4, Easy→5` happens **inside** the SRS scheduler — the wire never sees SM-2 internal numbers.
+- **XP awards are deterministic and server-computed.** Clients NEVER send `xpEarned`; they only read the value off the response. This avoids drift and exploit ("send xpEarned=99999"). The mapping `[0, 5, 10, 15][quality]` lives in `data-model.md` v7 + this section.
+- **Streak advances only on `quality >= 1`** (Hard/Good/Easy). Rating `Again` (0) updates `lastStudiedAt` and may break the streak (if `prevDate < yesterday`) but never advances it. This prevents users from gaming the streak by spamming `Again` on a single card.
+- **Streak rule operates on UTC calendar dates**, not on rolling 24-hour windows. Consistent with `GET /api/dashboard/progress-history` (also UTC dates).
+- **`lastStudiedAt` always updates**, even on `quality = 0` — so the streak machine in the next request has the right "prev day" boundary.
+- **Badges are persisted in a separate `EarnedBadge` table**, NOT denormalized into `User`. `User.badges` on the wire is derived per-request via a `findMany({ where: { userId } })`. This keeps the badge log immutable and auditable, and the `user.badges` payload stays small (≤ 3 rows in v7).
+- **Badges are language-agnostic, lifetime-cumulative, never lost** — once earned, never removed. New badges in future versions go through the same EarnedBadge table.
+- **`dueToday` on the dashboard is language-scoped**, even though `streak/totalXP/badges` are NOT. Rationale: `dueToday` is a "what to review next" CTA — it MUST point to cards the user can actually study right now in their current language. `streak/totalXP/badges` are habit metrics that span both languages.
+- **The progress response does NOT include `badges`.** Frontend refetches `/api/auth/me` after a rating event if it suspects a new badge was earned (e.g. crossing the 100-XP threshold, hitting the 7-day mark). This keeps the hot-path response slim — the rating loop in `/topics/[slug]/review` runs N times per session.
+- **Sentence mining auto-creates a per-user, per-language Topic with slug `__mined__`.** The slug is reserved — frontend MUST NOT let users create a regular topic with that slug. If the user deletes the mined-topic, the next mine call recreates it cleanly. Mining does NOT touch flashcards (no automatic Flashcard creation in v7 — the entry lives only in `VocabularyEntry`); the topic exists for surfacing the bucket in `GET /api/topics`.
+- **`POST /api/vocabulary/mine` wraps its response in `{ item }`** while `POST /api/vocabulary` returns a bare entry. This is intentional — the wrap is a type-level discriminator for the frontend hook so the "mined" toast can be triggered without sniffing call sites. Future v8 may unify these.
+- **`POST /api/vocabulary/mine` does NOT inherit `language` from `user.language`** — `language` is REQUIRED in the body. The mining context (reading screen) already knows its language; making it explicit eliminates a class of "mined into wrong bucket on cross-language read" bugs.
+- **`meaning` is seeded to empty string on mine**, not null. The DB column stays `NOT NULL` (no schema change). Frontend MUST nudge the user to fill `meaning` from `/vocabulary` (e.g. visual badge on entries with `meaning === ""`).
+- **No async / 202 flows** — every v7 endpoint stays synchronous (XP/streak/badge update is in the same DB transaction as the SRS update).
+- **JWT does NOT embed gamification fields** — they change too often. Frontend reads them off `/api/auth/me` on shell mount and updates `streak`/`totalXP` optimistically from progress responses; full refetch on suspected badge earn.
 
 ---
 

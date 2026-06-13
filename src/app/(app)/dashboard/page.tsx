@@ -65,6 +65,24 @@ export default function DashboardPage() {
         Xin chào{name ? `, ${name}` : ""} 👋
       </h1>
 
+      {/* v7 — gamification stats: due today (lang-scoped) + streak + XP */}
+      <div className="grid grid-cols-3 gap-4">
+        <StatTile label="Hôm nay cần ôn" value={String(data.dueToday)} />
+        <StatTile label="🔥 Streak" value={`${data.streak} ngày`} />
+        <StatTile label="⭐ XP" value={`${data.totalXP} XP`} />
+      </div>
+
+      {/* v7 — earned badges strip */}
+      {data.badges.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {data.badges.map((b) => (
+            <Badge key={b.id} variant="secondary" className="px-3 py-1 text-sm">
+              🏆 {b.label}
+            </Badge>
+          ))}
+        </div>
+      )}
+
       {/* Totals */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatTile label="Topics" value={String(totals.topicCount)} />

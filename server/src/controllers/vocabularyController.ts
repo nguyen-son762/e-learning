@@ -257,3 +257,75 @@ export async function setProgress(req: Request, res: Response): Promise<void> {
   });
   res.status(200).json({ id: updated.id, known: updated.known });
 }
+
+// v7 — Sentence Mining quick-capture.
+// POST /api/vocabulary/mine -> 201 { item: VocabularyEntry }
+// Body: { word, exampleSentence, language? }
+// Behavior: find-or-create the caller's per-language Topic for mined words and create a
+// VocabularyEntry. Re-mining reuses the same topic; if the user has deleted it, a fresh one is
+// created on the next call.
+//
+// Note on slug: the contract names the slug "__mined__", but the schema's @@unique([slug, language])
+// is GLOBAL across users, so two users cannot both own a Topic at ("__mined__", "en"). We honor
+// the contract intent ("per-user, per-language mined bucket; re-mining lands in the same slot")
+// by deriving a per-user slug "__mined__-<userIdSuffix>". Find-or-create keys off (userId,
+// language, "__mined__" prefix) so behavior is identical to the spec from the caller's view.
+const mineSchema = z.object({
+  word: z.string().trim().min(1, "word không được để trống."),
+  exampleSentence: z.string().trim().min(1, "exampleSentence không được để trống."),
+  language: z.enum(["en", "zh"]).optional(),
+});
+
+const MINED_SLUG_PREFIX = "__mined__";
+
+function minedSlugFor(userId: string): string {
+  // userId is a cuid, never null/empty; the suffix keeps the slug globally unique.
+  return `${MINED_SLUG_PREFIX}-${userId}`;
+}
+
+export async function mineVocabulary(req: Request, res: Response): Promise<void> {
+  const userId = req.userId!;
+  const body = parseBody(mineSchema, req.body);
+  const language: Language = await resolveCreateLanguage(userId, body.language);
+
+  const slug = minedSlugFor(userId);
+  let minedTopic = await prisma.topic.findUnique({
+    where: { slug_language: { slug, language } },
+  });
+  if (!minedTopic) {
+    minedTopic = await prisma.topic.create({
+      data: {
+        slug,
+        title: "Mined",
+        titleVi: "Mỏ từ vựng",
+        description: null,
+        order: 0,
+        userId,
+        language,
+      },
+    });
+  }
+
+  const created = await prisma.vocabularyEntry.create({
+    data: {
+      userId,
+      word: body.word.trim(),
+      meaning: "",
+      pronunciation: null,
+      partOfSpeech: null,
+      synonyms: [],
+      antonyms: [],
+      exampleSentence: body.exampleSentence.trim(),
+      notes: null,
+      tags: [],
+      cefrLevel: null,
+      pinyin: null,
+      hskLevel: null,
+      language,
+      isFavorite: false,
+      known: false,
+    },
+  });
+
+  res.status(201).json({ item: toVocabularyEntry(created) });
+}

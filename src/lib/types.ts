@@ -13,6 +13,17 @@
  */
 export type Language = "en" | "zh";
 
+/**
+ * v7 — Gamification badge. Server-detected achievement, persisted on first
+ * earn (once earned, never lost). `label` is a Vietnamese display string
+ * frozen server-side — render as-is.
+ */
+export interface Badge {
+  id: string; // "first-review" | "week-streak" | "century-xp"
+  label: string;
+  earnedAt: string; // ISO 8601
+}
+
 export interface User {
   id: string;
   email: string;
@@ -20,6 +31,10 @@ export interface User {
   role: "USER" | "ADMIN"; // v5
   language: Language | null; // v6 — null = never chosen → /choose-language
   createdAt: string; // ISO 8601
+  streak: number; // v7 — consecutive-day study streak (>= 0)
+  lastStudiedAt: string | null; // v7 — ISO 8601 of last SRS rating event
+  totalXP: number; // v7 — lifetime XP (>= 0)
+  badges: Badge[]; // v7 — earned badges (server-detected)
 }
 
 export interface AuthResponse {
@@ -238,6 +253,8 @@ export interface FlashcardProgressResponse {
   known: boolean;
   updatedAt: string;
   nextReviewAt?: string | null; // v3 — SRS scheduler. Additive (omitted by old backends).
+  xpEarned: number; // v7 — XP awarded by THIS rating (0|5|10|15)
+  newStreak: number; // v7 — user's streak AFTER this rating
 }
 
 // v3 — GET /api/topics/:slug/review (list wrapper + dueCount alias)
@@ -274,6 +291,24 @@ export interface DashboardResponse {
   totals: DashboardTotals;
   topicProgress: ListResponse<TopicSummary>;
   recentAttempts: ListResponse<RecentAttempt>;
+  // v7 — gamification (language-agnostic) + due CTA (language-scoped).
+  streak: number;
+  totalXP: number;
+  dueToday: number;
+  badges: Badge[];
+}
+
+// ---- v7 — Sentence Mining ----
+
+export interface MineVocabularyInput {
+  word: string;
+  exampleSentence: string;
+  language: Language; // REQUIRED — pass the reading screen's language explicitly
+}
+
+/** POST /api/vocabulary/mine → wrapped (differs from POST /api/vocabulary). */
+export interface MineVocabularyResponse {
+  item: VocabularyEntry;
 }
 
 // ---- Error shape ----

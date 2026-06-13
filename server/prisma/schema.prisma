@@ -27,6 +27,10 @@ model User {
   role         Role     @default(USER)
   // v6 — selected learning language. Null = user has never picked; frontend redirects to /choose-language.
   language     String?
+  // v7 — gamification. streak/totalXP backfill 0 for pre-v7 rows; lastStudiedAt null until first SRS rating.
+  streak        Int       @default(0)
+  lastStudiedAt DateTime? @map("last_studied_at")
+  totalXP       Int       @default(0) @map("total_xp")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -34,8 +38,24 @@ model User {
   readingAttempts   ReadingAttempt[]
   vocabularyEntries VocabularyEntry[]
   createdTopics     Topic[]
+  earnedBadges      EarnedBadge[]
 
   @@map("users")
+}
+
+// v7 — persisted badge log. Once earned, never lost. Derived `badges` array on the User response
+// is built by joining this table; `earnedAt` is the first-detection timestamp.
+model EarnedBadge {
+  id       String   @id @default(cuid())
+  userId   String   @map("user_id")
+  badgeId  String   @map("badge_id")
+  earnedAt DateTime @default(now()) @map("earned_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, badgeId])
+  @@index([userId])
+  @@map("earned_badges")
 }
 
 model Topic {
