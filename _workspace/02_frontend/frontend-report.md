@@ -214,3 +214,63 @@ Mutation helpers follow the existing convention (`markFlashcard`, `resetTopicPro
 
 ### Verification
 - `npx tsc --noEmit` → exit 0 (no type errors).
+
+---
+
+## v6 — Chinese Learning Module (Ha, 2026-06-13, task #3)
+
+Status: completed (typecheck ✓, lint ✓, `next build` ✓ — 22 routes, `/choose-language` registered).
+
+### New routes / pages
+- `/choose-language` → `src/app/(app)/choose-language/page.tsx` — sits inside the `(app)` shell; the layout guard bypasses gating for this exact pathname. Calls `PUT /api/users/me/language` then redirects `/dashboard`.
+
+### Updated screens
+- `/` (landing) — branches: `user.language === null` → `/choose-language`; else `/dashboard`.
+- `/login` — success branches on `user.language` (null → `/choose-language`).
+- `/register` — always redirects to `/choose-language` (newly-created accounts have `language === null` per contract).
+- `(auth)/layout` — already-authed user with `language === null` → `/choose-language`.
+- `(app)/layout` — new v6 guard: `user.language === null` & path ≠ `/choose-language` → redirect. Listens to `el:language-not-selected` window event for defensive redirect on 403. Publishes `AuthContext` (user + refresh) for descendants.
+- `/topics/[slug]` — branches on `topic.language`. `zh` → renders `<ChineseFlashcardFront>` + `<ChineseFlashcardBack>` (Hán tự 64px, pinyin/meaning/bilingual example, `zh-CN` TTS).
+- `/topics/[slug]/review` — same Chinese variant via `user.language` (since SRS only surfaces topics of the current language).
+- `/vocabulary` — word column uses `HanziText` for `zh` entries; renders `PinyinText` under the word; level Badge swaps to `HskBadge` for `zh`; TTS button passes `entry.language`.
+- `/vocabulary/new` — reads `user.language` from `AuthContext`, passes to `VocabularyForm`. Dictionary auto-fill is now en-only.
+- `/vocabulary/[id]/edit` — reads `entry.language` (immutable per spec) and passes it to `VocabularyForm`.
+- `/vocabulary/study` — front face uses `HanziText` + `PinyinText` for zh entries; TTS button passes `entry.language`.
+
+### New composites (`src/components/`)
+- `LanguageGate` (`language-gate.tsx`) — 2-card chooser used by `/choose-language`. Whole card is the click target; current language gets `border-2 border-[--success]` + "Đang học" badge.
+- `LanguageSwitcher` (`language-switcher.tsx`) — TopNav dropdown (flag + label). One-click swap fires `PUT /api/users/me/language`, then `onChanged()` (parent refreshes `/api/auth/me`). Detail routes bounce to `/dashboard` after switch. Hidden on `/choose-language`.
+- `HanziText` (`hanzi-text.tsx`) — wraps Hán tự with `lang="zh-CN"` + CJK font chain. `large={true}` (default) applies `text-flashcard-hanzi` (64px md+, 56px mobile).
+- `PinyinText` (`pinyin-text.tsx`) — wraps pinyin with `lang="zh-Latn-pinyin"` + `text-flashcard-pinyin` token (22/28). `size="sm"` for caption use.
+- `HskBadge` (`hsk-badge.tsx`) — "HSK 1"…"HSK 6" with per-level palette tokens `--hsk-{1..6}-{bg,fg}`.
+- `ToneBadge` (`tone-badge.tsx`) — tiny circular badge with tone numeral 1–5 in `--tone-{1..5}`.
+- `ChineseFlashcardFront` (`chinese-flashcard.tsx`) — Hán tự (large) + 🔊 TTS button (top-right, stops propagation to not flip the card).
+- `ChineseFlashcardBack` (`chinese-flashcard.tsx`) — parses `back` as `"<pinyin> — <meaning>"` and `example` as `"<Chinese> (<pinyin>) — <Vietnamese>"` (helpers in `src/lib/chinese.ts`). Falls back to raw render + Alert hint on malformed cards.
+- `AuthContext` (`auth-context.tsx`) — read-only context from `(app)/layout` (user + refresh) — consumed by `/choose-language`, `/vocabulary/new`, topic review.
+
+### Hooks
+- `useAuth` — added `updateLanguage(language)` → calls `PUT /api/users/me/language` + persists user.
+- `useTopics(language?)`, `useReadingExercises(language?)`, `useVocabulary({ language })`, `useVocabularyTags(language?)`, `useDashboard(language?)`, `useProgressHistory(days, language?)` — all append `?language=` when provided; omitted ⇒ no param ⇒ backend uses `user.language` (v6 contract default).
+- `createTopic` body now accepts optional `language`.
+
+### Library
+- `types.ts` — new `Language`, `HskLevel`, `HSK_LEVELS`. Added `language` field to `User` (nullable), `TopicSummary`, `ReadingExerciseSummary`, `ReadingExerciseDetail`, `VocabularyEntry`. Added `pinyin`, `hskLevel` to `VocabularyEntry` and `VocabularyInput`. New `LanguagePreferenceResponse`, `LanguageScopedParams`.
+- `tts.ts` — `speak(text, language?)` selects `en-US` or `zh-CN`. New `ttsLocale()` helper.
+- `chinese.ts` — new. `parseChineseCardBack(back)` + `parseChineseCardExample(example)` per design-spec §3.5b.
+- `api.ts` — on `403 LANGUAGE_NOT_SELECTED`, dispatches `el:language-not-selected` window event for `(app)/layout` to catch.
+
+### Tokens + fonts
+- `globals.css` — added `--tone-1..5` (light + dark) for tone-mark coloration; `--hsk-1-{bg,fg}` … `--hsk-6-{bg,fg}` pairs (light + dark) used by `HskBadge`; utility classes `.font-cjk`, `.text-flashcard-hanzi` (64/72 desktop, 56 mobile), `.text-flashcard-pinyin` (22/28).
+- `layout.tsx` — loaded **Noto Sans SC** via `next/font/google`, exposed as `--font-noto-sans-sc`. Applied ONLY through `.font-cjk` / `.text-flashcard-hanzi` so body text stays Inter.
+
+### Notes for Mai (QA)
+- The 403 `LANGUAGE_NOT_SELECTED` defensive path: `(app)/layout.tsx` listens to `el:language-not-selected`. If a hook fires this while the user is on `/choose-language`, the listener is a no-op (good).
+- `/vocabulary/[id]/edit` deliberately branches on `entry.language`, NOT `user.language` — so editing a `zh` entry while currently learning English still shows the Chinese form. This matches the design-spec.
+- Topic-review SRS page branches on `user.language` (not topic.language) — backend should never return mixed-language results in a single review batch, but if it does the render won't match.
+- Chinese flashcard malformed-card fallback: when `parseChineseCardBack(back)` fails, the back face renders the raw `back` string plus an inline Alert hint "Định dạng thẻ không chuẩn." — verify with admin-seeded sample cards.
+
+### Known follow-ups (out of scope for this task)
+- §2 mobile sheet: language switcher in the hamburger as a "labeled select-style row" (design-spec §2 v6). Currently the dropdown still works on mobile but lives next to the avatar; a sheet row would be more discoverable.
+- `ToneBadge` is exported but not yet used (intentional: design-spec §3.5b calls it "optional decoration"; back of card already shows tone via the diacritic).
+- Keyboard shortcut `T` for TTS on the visible face (design-spec §3.5b) — not implemented; TTS button is mouse-clickable only.
+- Admin reading routes (`/admin/reading*`) gain a language column/filter per route-map — not in scope for task #3; would be a follow-up.

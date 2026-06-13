@@ -12,6 +12,7 @@ import {
 } from "@/hooks/useTopics";
 import { ApiError } from "@/lib/api";
 import { getStoredUser } from "@/lib/auth";
+import { useAuthContext } from "@/components/auth-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,7 +43,12 @@ export default function EditTopicPage({
 }) {
   const { slug } = use(params);
   const router = useRouter();
-  const { data, loading, error, refetch } = useTopicDetail(slug);
+  // v6 amendment — pin slug lookup to user's current language.
+  const { user } = useAuthContext();
+  const { data, loading, error, refetch } = useTopicDetail(
+    slug,
+    user.language ?? undefined,
+  );
 
   const [title, setTitle] = useState("");
   const [titleVi, setTitleVi] = useState("");

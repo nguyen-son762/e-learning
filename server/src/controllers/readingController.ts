@@ -10,12 +10,41 @@ import {
   toReadingAttempt,
   toReadingQuestionAdmin,
 } from "../lib/serializers";
+import {
+  resolveListLanguage,
+  resolveCreateLanguage,
+  resolveSlug,
+  getUserLanguage,
+  parseLanguageQuery,
+} from "../lib/language";
+
+// v6 amendment — 3-step ReadingExercise loader. NEVER raises LANGUAGE_NOT_SELECTED.
+async function resolveSlugExerciseId(req: Request, slug: string): Promise<string | null> {
+  const explicit = parseLanguageQuery(req.query.language);
+  const userLanguage = req.userId ? await getUserLanguage(req.userId) : null;
+  const row = await resolveSlug(slug, {
+    explicitLanguage: explicit,
+    userLanguage,
+    findOne: (where) =>
+      prisma.readingExercise.findFirst({ where, select: { id: true } }),
+    findFallback: (s) =>
+      prisma.readingExercise.findFirst({
+        where: { slug: s },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: { id: true },
+      }),
+  });
+  return row?.id ?? null;
+}
 
 // GET /api/reading-exercises -> { items: ReadingExerciseSummary[], total }
+// v6 — accepts ?language=en|zh; defaults to user.language (403 LANGUAGE_NOT_SELECTED if null).
 export async function listExercises(req: Request, res: Response): Promise<void> {
   const userId = req.userId!;
+  const language = await resolveListLanguage(userId, req.query.language);
 
   const exercises = await prisma.readingExercise.findMany({
+    where: { language },
     orderBy: [{ order: "asc" }, { createdAt: "asc" }],
     include: { _count: { select: { questions: true } } },
   });
@@ -43,13 +72,17 @@ export async function listExercises(req: Request, res: Response): Promise<void> 
 }
 
 // GET /api/reading-exercises/:slug -> ReadingExerciseDetail (NO correctIndex on questions)
+// v6 amendment — uses 3-step slug resolution (explicit ?language= → user.language → any deterministic).
 export async function getExercise(req: Request, res: Response): Promise<void> {
   const { slug } = req.params;
 
-  const exercise = await prisma.readingExercise.findUnique({
-    where: { slug },
-    include: { questions: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] } },
-  });
+  const exerciseId = await resolveSlugExerciseId(req, slug);
+  const exercise = exerciseId
+    ? await prisma.readingExercise.findUnique({
+        where: { id: exerciseId },
+        include: { questions: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] } },
+      })
+    : null;
   if (!exercise) {
     throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
   }
@@ -60,6 +93,7 @@ export async function getExercise(req: Request, res: Response): Promise<void> {
     title: exercise.title,
     level: exercise.level,
     passage: exercise.passage,
+    language: exercise.language === "zh" ? "zh" : "en",
     questions: exercise.questions.map(toReadingQuestionPublic),
   });
 }
@@ -74,10 +108,14 @@ export async function createAttempt(req: Request, res: Response): Promise<void> 
   const { slug } = req.params;
   const body = parseBody(attemptSchema, req.body);
 
-  const exercise = await prisma.readingExercise.findUnique({
-    where: { slug },
-    include: { questions: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] } },
-  });
+  // v6 amendment — 3-step slug resolution.
+  const exerciseId = await resolveSlugExerciseId(req, slug);
+  const exercise = exerciseId
+    ? await prisma.readingExercise.findUnique({
+        where: { id: exerciseId },
+        include: { questions: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] } },
+      })
+    : null;
   if (!exercise) {
     throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
   }
@@ -137,13 +175,14 @@ export async function listAttempts(req: Request, res: Response): Promise<void> {
   const userId = req.userId!;
   const { slug } = req.params;
 
-  const exercise = await prisma.readingExercise.findUnique({ where: { slug } });
-  if (!exercise) {
+  // v6 amendment — 3-step slug resolution.
+  const exerciseId = await resolveSlugExerciseId(req, slug);
+  if (!exerciseId) {
     throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
   }
 
   const attempts = await prisma.readingAttempt.findMany({
-    where: { userId, exerciseId: exercise.id },
+    where: { userId, exerciseId },
     orderBy: { createdAt: "desc" },
   });
 
@@ -166,6 +205,8 @@ const exerciseCreateSchema = z.object({
   title: z.string().trim().min(1),
   level: z.string().trim().min(1),
   passage: z.string().trim().min(1),
+  // v6 — optional; admin may pin to a specific language, else inherit from caller's user.language.
+  language: z.enum(["en", "zh"]).optional(),
   questions: z
     .array(
       z.object({
@@ -199,13 +240,17 @@ const questionUpdateSchema = z.object({
 });
 
 // POST /api/reading-exercises -> 201 ReadingExerciseSummary (admin only)
+// v6 — language: from body if present, else inherit from caller user.language; 403 if both absent.
 export async function createExercise(req: Request, res: Response): Promise<void> {
+  const userId = req.userId!;
   const body = parseBody(exerciseCreateSchema, req.body);
+  const language = await resolveCreateLanguage(userId, body.language);
 
-  let slug = makeSlug(body.title);
+  const base = makeSlug(body.title);
+  let slug = base;
   let suffix = 2;
-  while (await prisma.readingExercise.findUnique({ where: { slug } })) {
-    slug = `${makeSlug(body.title)}-${suffix++}`;
+  while (await prisma.readingExercise.findUnique({ where: { slug_language: { slug, language } } })) {
+    slug = `${base}-${suffix++}`;
   }
 
   const maxOrder = await prisma.readingExercise.aggregate({ _max: { order: true } });
@@ -218,6 +263,7 @@ export async function createExercise(req: Request, res: Response): Promise<void>
       level: body.level,
       passage: body.passage,
       order: nextOrder,
+      language,
       questions: {
         create: body.questions.map((q, i) => ({
           prompt: q.prompt,
@@ -239,11 +285,12 @@ export async function updateExercise(req: Request, res: Response): Promise<void>
   const body = parseBody(exerciseUpdateSchema, req.body);
   const userId = req.userId!;
 
-  const existing = await prisma.readingExercise.findUnique({ where: { slug } });
-  if (!existing) throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
+  // v6 amendment — 3-step slug resolution.
+  const existingId = await resolveSlugExerciseId(req, slug);
+  if (!existingId) throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
 
   const updated = await prisma.readingExercise.update({
-    where: { slug },
+    where: { id: existingId },
     data: {
       ...(body.title !== undefined && { title: body.title }),
       ...(body.level !== undefined && { level: body.level }),
@@ -266,10 +313,11 @@ export async function updateExercise(req: Request, res: Response): Promise<void>
 export async function deleteExercise(req: Request, res: Response): Promise<void> {
   const { slug } = req.params;
 
-  const existing = await prisma.readingExercise.findUnique({ where: { slug } });
-  if (!existing) throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
+  // v6 amendment — 3-step slug resolution.
+  const existingId = await resolveSlugExerciseId(req, slug);
+  if (!existingId) throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
 
-  await prisma.readingExercise.delete({ where: { slug } });
+  await prisma.readingExercise.delete({ where: { id: existingId } });
 
   res.status(200).json({ success: true });
 }
@@ -279,22 +327,23 @@ export async function createQuestion(req: Request, res: Response): Promise<void>
   const { slug } = req.params;
   const body = parseBody(questionCreateSchema, req.body);
 
-  const exercise = await prisma.readingExercise.findUnique({ where: { slug } });
-  if (!exercise) throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
+  // v6 amendment — 3-step slug resolution.
+  const exerciseId = await resolveSlugExerciseId(req, slug);
+  if (!exerciseId) throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
 
   if (body.correctIndex >= body.options.length) {
     throw new AppError("VALIDATION_ERROR", "correctIndex vượt quá số lượng options.");
   }
 
   const maxOrder = await prisma.readingQuestion.aggregate({
-    where: { exerciseId: exercise.id },
+    where: { exerciseId },
     _max: { order: true },
   });
   const nextOrder = body.order ?? (maxOrder._max.order ?? -1) + 1;
 
   const question = await prisma.readingQuestion.create({
     data: {
-      exerciseId: exercise.id,
+      exerciseId,
       prompt: body.prompt,
       options: body.options,
       correctIndex: body.correctIndex,
@@ -310,11 +359,12 @@ export async function updateQuestion(req: Request, res: Response): Promise<void>
   const { slug, id } = req.params;
   const body = parseBody(questionUpdateSchema, req.body);
 
-  const exercise = await prisma.readingExercise.findUnique({ where: { slug } });
-  if (!exercise) throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
+  // v6 amendment — 3-step slug resolution.
+  const exerciseId = await resolveSlugExerciseId(req, slug);
+  if (!exerciseId) throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
 
   const existing = await prisma.readingQuestion.findFirst({
-    where: { id, exerciseId: exercise.id },
+    where: { id, exerciseId },
   });
   if (!existing) throw new AppError("NOT_FOUND", "Không tìm thấy câu hỏi.");
 
@@ -341,11 +391,12 @@ export async function updateQuestion(req: Request, res: Response): Promise<void>
 export async function listQuestions(req: Request, res: Response): Promise<void> {
   const { slug } = req.params;
 
-  const exercise = await prisma.readingExercise.findUnique({ where: { slug } });
-  if (!exercise) throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
+  // v6 amendment — 3-step slug resolution.
+  const exerciseId = await resolveSlugExerciseId(req, slug);
+  if (!exerciseId) throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
 
   const questions = await prisma.readingQuestion.findMany({
-    where: { exerciseId: exercise.id },
+    where: { exerciseId },
     orderBy: [{ order: "asc" }, { createdAt: "asc" }],
   });
 
@@ -357,11 +408,12 @@ export async function listQuestions(req: Request, res: Response): Promise<void> 
 export async function deleteQuestion(req: Request, res: Response): Promise<void> {
   const { slug, id } = req.params;
 
-  const exercise = await prisma.readingExercise.findUnique({ where: { slug } });
-  if (!exercise) throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
+  // v6 amendment — 3-step slug resolution.
+  const exerciseId = await resolveSlugExerciseId(req, slug);
+  if (!exerciseId) throw new AppError("NOT_FOUND", "Không tìm thấy bài đọc.");
 
   const existing = await prisma.readingQuestion.findFirst({
-    where: { id, exerciseId: exercise.id },
+    where: { id, exerciseId },
   });
   if (!existing) throw new AppError("NOT_FOUND", "Không tìm thấy câu hỏi.");
 

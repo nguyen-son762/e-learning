@@ -28,6 +28,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState, ErrorState } from "@/components/states";
+import { useAuthContext } from "@/components/auth-context";
+import {
+  ChineseFlashcardFront,
+  ChineseFlashcardBack,
+} from "@/components/chinese-flashcard";
 import {
   Dialog,
   DialogContent,
@@ -45,10 +50,14 @@ export default function TopicStudyPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = use(params);
-  const { data, loading, error, refetch } = useTopicDetail(slug);
+  // v6 amendment — pin slug lookup to the user's current language so the
+  // (slug, language) compound resolves correctly and cache keys don't collide.
+  const { user } = useAuthContext();
+  const language = user.language ?? undefined;
+  const { data, loading, error, refetch } = useTopicDetail(slug, language);
   // v3 — surface the SRS due-card badge. Failures are non-fatal: we just hide
   // the badge rather than blocking the topic page.
-  const { data: review } = useTopicReview(slug);
+  const { data: review } = useTopicReview(slug, language);
   const dueCount = review?.dueCount ?? 0;
 
   // Local copy of cards so we can optimistically toggle `known`.
@@ -260,7 +269,7 @@ export default function TopicStudyPage({
             </div>
           )}
 
-          {/* Flashcard */}
+          {/* Flashcard — branches on topic.language (v6) */}
           <div className="flip-card h-72 w-full">
             {/* Justified exception: large clickable content surface (the flip area),
                 not a control — wrapping it in shadcn Button would fight the 3D flip
@@ -273,23 +282,38 @@ export default function TopicStudyPage({
             >
               <div className={cn("flip-inner", flipped && "is-flipped")}>
                 {/* FRONT */}
-                <div className="flip-face rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-[var(--shadow-flashcard)]">
-                  <span className="text-center text-4xl font-bold">
-                    {current.front}
-                  </span>
-                  <span className="mt-4 text-sm text-[var(--muted-foreground)]">
-                    (Nhấn để lật)
-                  </span>
+                <div className="flip-face relative rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-[var(--shadow-flashcard)]">
+                  {data.language === "zh" ? (
+                    <ChineseFlashcardFront hanzi={current.front} />
+                  ) : (
+                    <>
+                      <span className="text-center text-4xl font-bold">
+                        {current.front}
+                      </span>
+                      <span className="mt-4 text-sm text-[var(--muted-foreground)]">
+                        (Nhấn để lật)
+                      </span>
+                    </>
+                  )}
                 </div>
                 {/* BACK */}
                 <div className="flip-face flip-back rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-[var(--shadow-flashcard)]">
-                  <span className="text-center text-xl font-semibold">
-                    {current.back}
-                  </span>
-                  {current.example && (
-                    <p className="mt-3 max-w-md text-center text-base italic text-[var(--muted-foreground)]">
-                      “{current.example}”
-                    </p>
+                  {data.language === "zh" ? (
+                    <ChineseFlashcardBack
+                      back={current.back}
+                      example={current.example}
+                    />
+                  ) : (
+                    <>
+                      <span className="text-center text-xl font-semibold">
+                        {current.back}
+                      </span>
+                      {current.example && (
+                        <p className="mt-3 max-w-md text-center text-base italic text-[var(--muted-foreground)]">
+                          “{current.example}”
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
               </div>

@@ -25,6 +25,8 @@ model User {
   passwordHash String   @map("password_hash")
   name         String
   role         Role     @default(USER)
+  // v6 — selected learning language. Null = user has never picked; frontend redirects to /choose-language.
+  language     String?
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -38,19 +40,23 @@ model User {
 
 model Topic {
   id          String   @id @default(cuid())
-  slug        String   @unique
+  slug        String
   title       String
   titleVi     String   @map("title_vi")
   description String?
   order       Int      @default(0)
   userId      String?  @map("user_id")
+  // v6 — content language; defaults to "en" for backward compatibility on existing rows.
+  language    String   @default("en")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   flashcards Flashcard[]
   user       User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
 
+  @@unique([slug, language])
   @@index([userId])
+  @@index([language])
   @@map("topics")
 }
 
@@ -95,17 +101,21 @@ model FlashcardProgress {
 
 model ReadingExercise {
   id        String   @id @default(cuid())
-  slug      String   @unique
+  slug      String
   title     String
   passage   String   @db.Text
   level     String
   order     Int      @default(0)
+  // v6 — content language; defaults to "en" for backward compatibility on existing rows.
+  language  String   @default("en")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   questions ReadingQuestion[]
   attempts  ReadingAttempt[]
 
+  @@unique([slug, language])
+  @@index([language])
   @@map("reading_exercises")
 }
 
@@ -155,6 +165,10 @@ model VocabularyEntry {
   notes           String?
   tags            String[]
   cefrLevel       String?  @map("cefr_level")
+  // v6 — Chinese-specific. pinyin: Hanyu Pinyin with tone marks. hskLevel: 1–6. Both null when language === "en".
+  pinyin          String?
+  hskLevel        Int?     @map("hsk_level")
+  language        String   @default("en")
   isFavorite      Boolean  @default(false) @map("is_favorite")
   known           Boolean  @default(false)
   createdAt       DateTime @default(now()) @map("created_at")
@@ -164,5 +178,6 @@ model VocabularyEntry {
 
   @@index([userId, createdAt])
   @@index([userId, word])
+  @@index([userId, language])
   @@map("vocabulary_entries")
 }

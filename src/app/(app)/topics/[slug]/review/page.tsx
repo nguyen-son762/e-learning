@@ -19,6 +19,11 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
 import { EmptyState, ErrorState } from "@/components/states";
+import { useAuthContext } from "@/components/auth-context";
+import {
+  ChineseFlashcardFront,
+  ChineseFlashcardBack,
+} from "@/components/chinese-flashcard";
 
 /**
  * SRS review session for a topic (Feature 5).
@@ -35,7 +40,12 @@ export default function TopicReviewPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = use(params);
-  const { data, loading, error, refetch } = useTopicReview(slug);
+  // v6 — review only surfaces topics in user's current language, so
+  // user.language is a safe proxy for the card variant.
+  const { user } = useAuthContext();
+  const language = user.language ?? "en";
+  // v6 amendment — review is now list-style with `?language=`; thread it.
+  const { data, loading, error, refetch } = useTopicReview(slug, language);
 
   const [cards, setCards] = useState<Flashcard[]>([]);
   const [reviewed, setReviewed] = useState(0); // count of cards user has graded
@@ -196,22 +206,37 @@ export default function TopicReviewPage({
           className="block h-full w-full text-left"
         >
           <div className={cn("flip-inner", flipped && "is-flipped")}>
-            <div className="flip-face rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-[var(--shadow-flashcard)]">
-              <span className="text-center text-4xl font-bold">
-                {current.front}
-              </span>
-              <span className="mt-4 text-sm text-[var(--muted-foreground)]">
-                (Nhấn để lật)
-              </span>
+            <div className="flip-face relative rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-[var(--shadow-flashcard)]">
+              {language === "zh" ? (
+                <ChineseFlashcardFront hanzi={current.front} />
+              ) : (
+                <>
+                  <span className="text-center text-4xl font-bold">
+                    {current.front}
+                  </span>
+                  <span className="mt-4 text-sm text-[var(--muted-foreground)]">
+                    (Nhấn để lật)
+                  </span>
+                </>
+              )}
             </div>
             <div className="flip-face flip-back rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-[var(--shadow-flashcard)]">
-              <span className="text-center text-xl font-semibold">
-                {current.back}
-              </span>
-              {current.example && (
-                <p className="mt-3 max-w-md text-center text-base italic text-[var(--muted-foreground)]">
-                  “{current.example}”
-                </p>
+              {language === "zh" ? (
+                <ChineseFlashcardBack
+                  back={current.back}
+                  example={current.example}
+                />
+              ) : (
+                <>
+                  <span className="text-center text-xl font-semibold">
+                    {current.back}
+                  </span>
+                  {current.example && (
+                    <p className="mt-3 max-w-md text-center text-base italic text-[var(--muted-foreground)]">
+                      “{current.example}”
+                    </p>
+                  )}
+                </>
               )}
             </div>
           </div>

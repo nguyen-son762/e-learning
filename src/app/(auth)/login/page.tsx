@@ -30,9 +30,13 @@ export default function LoginPage() {
     setSubmitting(true);
     setFieldError(null);
     try {
-      await login({ email, password });
+      const res = await login({ email, password });
       toast.success("Đăng nhập thành công");
-      router.replace("/dashboard");
+      // v6 — new accounts (and any pre-v6 user whose language was nulled) go
+      // to the language gate before the dashboard.
+      router.replace(
+        res.user.language === null ? "/choose-language" : "/dashboard",
+      );
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.code === "INVALID_CREDENTIALS") {

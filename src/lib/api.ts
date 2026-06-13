@@ -80,6 +80,14 @@ export async function fetchJson<T>(
     const code = errData?.error?.code ?? "INTERNAL_ERROR";
     const message =
       errData?.error?.message ?? "Đã xảy ra lỗi. Vui lòng thử lại.";
+
+    // v6 — defensive: backend says caller has no learning language. The (app)
+    // shell guard usually catches this first, but if a hook outraces the
+    // guard we broadcast so the shell can redirect.
+    if (code === "LANGUAGE_NOT_SELECTED" && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("el:language-not-selected"));
+    }
+
     throw new ApiError(code, message, res.status);
   }
 

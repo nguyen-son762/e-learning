@@ -4,19 +4,51 @@ import { prisma } from "../lib/prisma";
 import { AppError } from "../lib/errors";
 import { parseBody } from "../middleware/validate";
 import { toTopicSummary, toFlashcard, completionPercent } from "../lib/serializers";
+import {
+  resolveListLanguage,
+  resolveCreateLanguage,
+  resolveSlug,
+  getUserLanguage,
+  parseLanguageQuery,
+  type Language,
+} from "../lib/language";
+
+// v6 amendment — 3-step Topic loader. NEVER raises LANGUAGE_NOT_SELECTED.
+// Returns the Topic row resolved per the amendment rule. Callers that need includes (flashcards,
+// _count, etc.) re-fetch by id, which is cheap and keeps the helper's typing simple.
+async function resolveSlugTopicId(req: Request, slug: string): Promise<string | null> {
+  const explicit = parseLanguageQuery(req.query.language);
+  const userLanguage = req.userId ? await getUserLanguage(req.userId) : null;
+  const row = await resolveSlug(slug, {
+    explicitLanguage: explicit,
+    userLanguage,
+    findOne: (where) =>
+      prisma.topic.findFirst({ where, select: { id: true } }),
+    findFallback: (s) =>
+      prisma.topic.findFirst({
+        where: { slug: s },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: { id: true },
+      }),
+  });
+  return row?.id ?? null;
+}
 
 // GET /api/topics -> { items: TopicSummary[], total }
+// v6 — accepts ?language=en|zh; defaults to user.language (403 LANGUAGE_NOT_SELECTED if null).
 export async function listTopics(req: Request, res: Response): Promise<void> {
   const userId = req.userId!;
+  const language = await resolveListLanguage(userId, req.query.language);
 
   const topics = await prisma.topic.findMany({
+    where: { language },
     orderBy: [{ order: "asc" }, { createdAt: "asc" }],
     include: { _count: { select: { flashcards: true } } },
   });
 
   // Known counts per topic for this user (only known=true rows on cards in the topic).
   const known = await prisma.flashcardProgress.findMany({
-    where: { userId, known: true, flashcard: {} },
+    where: { userId, known: true, flashcard: { topic: { language } } },
     select: { flashcard: { select: { topicId: true } } },
   });
   const knownByTopic = new Map<string, number>();
@@ -33,16 +65,20 @@ export async function listTopics(req: Request, res: Response): Promise<void> {
 }
 
 // GET /api/topics/:slug -> TopicDetail (single object, not wrapped)
+// v6 amendment — uses 3-step slug resolution (explicit ?language= → user.language → any deterministic).
 export async function getTopic(req: Request, res: Response): Promise<void> {
   const userId = req.userId!;
   const { slug } = req.params;
 
-  const topic = await prisma.topic.findUnique({
-    where: { slug },
-    include: {
-      flashcards: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] },
-    },
-  });
+  const topicId = await resolveSlugTopicId(req, slug);
+  const topic = topicId
+    ? await prisma.topic.findUnique({
+        where: { id: topicId },
+        include: {
+          flashcards: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] },
+        },
+      })
+    : null;
   if (!topic) {
     throw new AppError("NOT_FOUND", "Không tìm thấy chủ đề.");
   }
@@ -72,6 +108,7 @@ export async function getTopic(req: Request, res: Response): Promise<void> {
     knownCount,
     completionPercent: completionPercent(knownCount, flashcardCount),
     userId: topic.userId ?? null,
+    language: topic.language === "zh" ? "zh" : "en",
     flashcards,
   });
 }
@@ -203,10 +240,13 @@ export async function resetTopicProgress(
   const userId = req.userId!;
   const { slug } = req.params;
 
-  const topic = await prisma.topic.findUnique({
-    where: { slug },
-    include: { _count: { select: { flashcards: true } } },
-  });
+  const topicId = await resolveSlugTopicId(req, slug);
+  const topic = topicId
+    ? await prisma.topic.findUnique({
+        where: { id: topicId },
+        include: { _count: { select: { flashcards: true } } },
+      })
+    : null;
   if (!topic) {
     throw new AppError("NOT_FOUND", "Không tìm thấy chủ đề.");
   }
@@ -241,6 +281,8 @@ const createTopicSchema = z.object({
   title: z.string().trim().min(1).max(80),
   titleVi: z.string().trim().min(1).max(80),
   description: z.string().optional(),
+  // v6 — optional; inherits from user.language when absent.
+  language: z.enum(["en", "zh"]).optional(),
 });
 
 const updateTopicSchema = z
@@ -286,13 +328,17 @@ function slugify(input: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-async function uniqueSlug(base: string): Promise<string> {
+async function uniqueSlug(base: string, language: Language): Promise<string> {
   const candidate = base.length > 0 ? base : "topic";
-  const exists = await prisma.topic.findUnique({ where: { slug: candidate } });
+  const exists = await prisma.topic.findUnique({
+    where: { slug_language: { slug: candidate, language } },
+  });
   if (!exists) return candidate;
   for (let i = 2; i <= 100; i++) {
     const next = `${candidate}-${i}`;
-    const taken = await prisma.topic.findUnique({ where: { slug: next } });
+    const taken = await prisma.topic.findUnique({
+      where: { slug_language: { slug: next, language } },
+    });
     if (!taken) return next;
   }
   // Fallback: append timestamp suffix.
@@ -300,14 +346,16 @@ async function uniqueSlug(base: string): Promise<string> {
 }
 
 // POST /api/topics -> 201 TopicSummary (single object)
+// v6 — language: from body if present, else inherit from user.language (403 if user.language null).
 export async function createTopic(
   req: Request,
   res: Response
 ): Promise<void> {
   const userId = req.userId!;
   const body = parseBody(createTopicSchema, req.body);
+  const language = await resolveCreateLanguage(userId, body.language);
 
-  const slug = await uniqueSlug(slugify(body.title));
+  const slug = await uniqueSlug(slugify(body.title), language);
 
   const topic = await prisma.topic.create({
     data: {
@@ -317,6 +365,7 @@ export async function createTopic(
       slug,
       userId,
       order: 0,
+      language,
     },
   });
 
@@ -332,10 +381,14 @@ export async function updateTopic(
   const { slug } = req.params;
   const body = parseBody(updateTopicSchema, req.body);
 
-  const topic = await prisma.topic.findUnique({
-    where: { slug },
-    include: { _count: { select: { flashcards: true } } },
-  });
+  // v6 amendment — 3-step resolution; ownership check runs after the slug resolves.
+  const topicId = await resolveSlugTopicId(req, slug);
+  const topic = topicId
+    ? await prisma.topic.findUnique({
+        where: { id: topicId },
+        include: { _count: { select: { flashcards: true } } },
+      })
+    : null;
   if (!topic) {
     throw new AppError("NOT_FOUND", "Không tìm thấy chủ đề.");
   }
@@ -372,7 +425,11 @@ export async function deleteTopic(
   const userId = req.userId!;
   const { slug } = req.params;
 
-  const topic = await prisma.topic.findUnique({ where: { slug } });
+  // v6 amendment — 3-step resolution; ownership check runs after the slug resolves.
+  const topicId = await resolveSlugTopicId(req, slug);
+  const topic = topicId
+    ? await prisma.topic.findUnique({ where: { id: topicId } })
+    : null;
   if (!topic) {
     throw new AppError("NOT_FOUND", "Không tìm thấy chủ đề.");
   }
@@ -400,7 +457,11 @@ export async function createFlashcard(
   const { slug } = req.params;
   const body = parseBody(createFlashcardSchema, req.body);
 
-  const topic = await prisma.topic.findUnique({ where: { slug } });
+  // v6 amendment — 3-step resolution; ownership check runs after the slug resolves.
+  const topicId = await resolveSlugTopicId(req, slug);
+  const topic = topicId
+    ? await prisma.topic.findUnique({ where: { id: topicId } })
+    : null;
   if (!topic) {
     throw new AppError("NOT_FOUND", "Không tìm thấy chủ đề.");
   }
@@ -493,15 +554,19 @@ export async function deleteFlashcard(
 }
 
 // GET /api/topics/:slug/review -> { items: Flashcard[], total, dueCount }   (v3)
+// v6 — accepts ?language=en|zh; defaults to user.language (403 LANGUAGE_NOT_SELECTED if null).
+// Matches the language-gated behavior of GET /api/topics so a fresh user can't bypass the
+// /choose-language redirect by deep-linking straight to the review queue.
 export async function getTopicReview(
   req: Request,
   res: Response
 ): Promise<void> {
   const userId = req.userId!;
   const { slug } = req.params;
+  const language = await resolveListLanguage(userId, req.query.language);
 
   const topic = await prisma.topic.findUnique({
-    where: { slug },
+    where: { slug_language: { slug, language } },
     include: {
       flashcards: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] },
     },

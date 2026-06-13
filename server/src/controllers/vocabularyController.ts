@@ -4,6 +4,11 @@ import { prisma } from "../lib/prisma";
 import { AppError } from "../lib/errors";
 import { parseBody } from "../middleware/validate";
 import { toVocabularyEntry } from "../lib/serializers";
+import {
+  resolveListLanguage,
+  resolveCreateLanguage,
+  type Language,
+} from "../lib/language";
 
 const CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"] as const;
 
@@ -23,10 +28,45 @@ const entryBodySchema = z.object({
   notes: z.string().optional(),
   tags: stringArray,
   cefrLevel: z.enum(CEFR_LEVELS).optional(),
+  // v6 — Chinese-specific.
+  pinyin: z.string().optional(),
+  hskLevel: z.number().int().min(1).max(6).optional(),
+  language: z.enum(["en", "zh"]).optional(),
   // PUT may also set the flags; if omitted they are left unchanged (handled below).
   isFavorite: z.boolean().optional(),
   known: z.boolean().optional(),
 });
+
+type EntryBody = {
+  cefrLevel?: string | undefined;
+  pinyin?: string | undefined;
+  hskLevel?: number | undefined;
+};
+
+// v6 — per-language field validity. zh: cefrLevel must be absent/null; en: pinyin/hskLevel must be absent/null.
+function assertLanguageFields(language: Language, body: EntryBody): void {
+  if (language === "zh") {
+    if (body.cefrLevel) {
+      throw new AppError(
+        "VALIDATION_ERROR",
+        "cefrLevel chỉ áp dụng khi language='en'."
+      );
+    }
+  } else {
+    if (body.pinyin !== undefined && body.pinyin !== null) {
+      throw new AppError(
+        "VALIDATION_ERROR",
+        "pinyin chỉ áp dụng khi language='zh'."
+      );
+    }
+    if (body.hskLevel !== undefined && body.hskLevel !== null) {
+      throw new AppError(
+        "VALIDATION_ERROR",
+        "hskLevel chỉ áp dụng khi language='zh'."
+      );
+    }
+  }
+}
 
 const favoriteSchema = z.object({ isFavorite: z.boolean() });
 const progressSchema = z.object({ known: z.boolean() });
@@ -41,8 +81,10 @@ async function getOwnedEntry(id: string, userId: string) {
 }
 
 // GET /api/vocabulary -> { items: VocabularyEntry[], total }
+// v6 — accepts ?language=en|zh; defaults to user.language (403 LANGUAGE_NOT_SELECTED if null).
 export async function listVocabulary(req: Request, res: Response): Promise<void> {
   const userId = req.userId!;
+  const language = await resolveListLanguage(userId, req.query.language);
 
   const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
   const tag = typeof req.query.tag === "string" ? req.query.tag.trim() : "";
@@ -51,7 +93,7 @@ export async function listVocabulary(req: Request, res: Response): Promise<void>
   const favorite = typeof req.query.favorite === "string" ? req.query.favorite : "";
   const sort = typeof req.query.sort === "string" ? req.query.sort : "newest";
 
-  const where: Record<string, unknown> = { userId };
+  const where: Record<string, unknown> = { userId, language };
 
   if (search) {
     where.OR = [
@@ -77,11 +119,13 @@ export async function listVocabulary(req: Request, res: Response): Promise<void>
 }
 
 // GET /api/vocabulary/tags -> { items: string[], total } (distinct, alpha case-insensitive)
+// v6 — accepts ?language=en|zh; defaults to user.language (403 LANGUAGE_NOT_SELECTED if null).
 export async function listTags(req: Request, res: Response): Promise<void> {
   const userId = req.userId!;
+  const language = await resolveListLanguage(userId, req.query.language);
 
   const entries = await prisma.vocabularyEntry.findMany({
-    where: { userId },
+    where: { userId, language },
     select: { tags: true },
   });
 
@@ -99,9 +143,12 @@ export async function listTags(req: Request, res: Response): Promise<void> {
 }
 
 // POST /api/vocabulary -> 201 VocabularyEntry
+// v6 — language: from body if present, else inherit from user.language; pinyin/hskLevel valid only for zh.
 export async function createVocabulary(req: Request, res: Response): Promise<void> {
   const userId = req.userId!;
   const body = parseBody(entryBodySchema, req.body);
+  const language = await resolveCreateLanguage(userId, body.language);
+  assertLanguageFields(language, body);
 
   const created = await prisma.vocabularyEntry.create({
     data: {
@@ -115,7 +162,10 @@ export async function createVocabulary(req: Request, res: Response): Promise<voi
       exampleSentence: body.exampleSentence ?? null,
       notes: body.notes ?? null,
       tags: body.tags,
-      cefrLevel: body.cefrLevel ?? null,
+      cefrLevel: language === "en" ? body.cefrLevel ?? null : null,
+      pinyin: language === "zh" ? body.pinyin ?? null : null,
+      hskLevel: language === "zh" ? body.hskLevel ?? null : null,
+      language,
       // isFavorite/known set server-side; ignore any in-body values on create.
       isFavorite: false,
       known: false,
@@ -133,10 +183,20 @@ export async function getVocabulary(req: Request, res: Response): Promise<void> 
 }
 
 // PUT /api/vocabulary/:id -> VocabularyEntry (full replacement of editable fields)
+// v6 — language is immutable post-create (the entry's slot lives in one language); body language must match.
 export async function updateVocabulary(req: Request, res: Response): Promise<void> {
   const userId = req.userId!;
-  await getOwnedEntry(req.params.id, userId);
+  const existing = await getOwnedEntry(req.params.id, userId);
   const body = parseBody(entryBodySchema, req.body);
+
+  const language: Language = existing.language === "zh" ? "zh" : "en";
+  if (body.language !== undefined && body.language !== language) {
+    throw new AppError(
+      "VALIDATION_ERROR",
+      "Không thể đổi ngôn ngữ của một từ vựng đã tạo."
+    );
+  }
+  assertLanguageFields(language, body);
 
   const updated = await prisma.vocabularyEntry.update({
     where: { id: req.params.id },
@@ -150,7 +210,9 @@ export async function updateVocabulary(req: Request, res: Response): Promise<voi
       exampleSentence: body.exampleSentence ?? null,
       notes: body.notes ?? null,
       tags: body.tags,
-      cefrLevel: body.cefrLevel ?? null,
+      cefrLevel: language === "en" ? body.cefrLevel ?? null : null,
+      pinyin: language === "zh" ? body.pinyin ?? null : null,
+      hskLevel: language === "zh" ? body.hskLevel ?? null : null,
       // Flags applied if present; omitted -> left unchanged (not reset).
       ...(body.isFavorite !== undefined ? { isFavorite: body.isFavorite } : {}),
       ...(body.known !== undefined ? { known: body.known } : {}),

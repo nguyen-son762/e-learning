@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState, ErrorState } from "@/components/states";
+import { useAuthContext } from "@/components/auth-context";
 
 export default function ReadingHistoryPage({
   params,
@@ -17,7 +18,12 @@ export default function ReadingHistoryPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = use(params);
-  const { data, loading, error, refetch } = useReadingAttempts(slug);
+  // v6 amendment — pin slug lookup to user's current language.
+  const { user } = useAuthContext();
+  const { data, loading, error, refetch } = useReadingAttempts(
+    slug,
+    user.language ?? undefined,
+  );
 
   return (
     <div className="flex flex-col gap-6">

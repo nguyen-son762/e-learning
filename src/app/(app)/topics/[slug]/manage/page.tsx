@@ -13,6 +13,7 @@ import {
 } from "@/hooks/useTopics";
 import { ApiError } from "@/lib/api";
 import { getStoredUser } from "@/lib/auth";
+import { useAuthContext } from "@/components/auth-context";
 import type { Flashcard } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,7 +45,12 @@ export default function ManageTopicPage({
 }) {
   const { slug } = use(params);
   const router = useRouter();
-  const { data, loading, error, refetch } = useTopicDetail(slug);
+  // v6 amendment — pin slug lookup to user's current language.
+  const { user } = useAuthContext();
+  const { data, loading, error, refetch } = useTopicDetail(
+    slug,
+    user.language ?? undefined,
+  );
 
   const [cards, setCards] = useState<Flashcard[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);

@@ -23,6 +23,10 @@ import { PARTS_OF_SPEECH } from "@/components/vocabulary-form";
 import type { VocabularyEntry, VocabularyListParams } from "@/lib/types";
 import { ApiError } from "@/lib/api";
 import { speak, isTtsSupported } from "@/lib/tts";
+import { HanziText } from "@/components/hanzi-text";
+import { PinyinText } from "@/components/pinyin-text";
+import { HskBadge } from "@/components/hsk-badge";
+import type { HskLevel } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -265,10 +269,21 @@ export default function VocabularyListPage() {
               <Card key={entry.id}>
                 <CardHeader className="pb-2">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="flex flex-col gap-1">
+                    <div className="flex min-w-0 flex-col gap-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <CardTitle>{entry.word}</CardTitle>
-                        {entry.pronunciation && (
+                        <CardTitle>
+                          {entry.language === "zh" ? (
+                            <HanziText large={false} className="text-2xl">
+                              {entry.word}
+                            </HanziText>
+                          ) : (
+                            entry.word
+                          )}
+                        </CardTitle>
+                        {entry.language === "zh" && entry.pinyin && (
+                          <PinyinText size="sm">{entry.pinyin}</PinyinText>
+                        )}
+                        {entry.language === "en" && entry.pronunciation && (
                           <span className="text-sm text-[var(--muted-foreground)]">
                             {entry.pronunciation}
                           </span>
@@ -277,6 +292,15 @@ export default function VocabularyListPage() {
                           <Badge variant="secondary">
                             {entry.partOfSpeech}
                           </Badge>
+                        )}
+                        {/* v6 — level badge: CEFR for en, HSK for zh. */}
+                        {entry.language === "en" && entry.cefrLevel && (
+                          <Badge variant="outline" className="text-xs">
+                            {entry.cefrLevel}
+                          </Badge>
+                        )}
+                        {entry.language === "zh" && entry.hskLevel != null && (
+                          <HskBadge level={entry.hskLevel as HskLevel} />
                         )}
                       </div>
                       <p className="text-sm text-[var(--foreground)]">
@@ -309,7 +333,7 @@ export default function VocabularyListPage() {
                           type="button"
                           variant="ghost"
                           size="icon"
-                          onClick={() => speak(entry.word)}
+                          onClick={() => speak(entry.word, entry.language)}
                           aria-label={`Phát âm ${entry.word}`}
                         >
                           <Volume2 className="h-4 w-4" />

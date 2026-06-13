@@ -1,5 +1,7 @@
-# Data Model — English Learning App (MVP)
+# Data Model — Multi-Language Learning App (MVP)
 
+> **v6 (2026-06-13): + Chinese Learning Module (multi-language).** Introduces a `Language` enum (`EN | ZH`) wired into four models: `User.language` (nullable — forces first-time selection), `Topic.language`, `ReadingExercise.language`, `VocabularyEntry.language`. `Flashcard` deliberately stays unchanged — language is inherited from `topic.language`. `VocabularyEntry` also gains `pinyin: String?` (Hanyu Pinyin with tone marks) and `hskLevel: Int?` (1–6). The previously-global `Topic.slug` and `ReadingExercise.slug` unique indexes are **replaced** with per-language composite uniques `@@unique([slug, language])` so `travel` may exist for both `en` and `zh`. Migration backfills `language = EN` for all existing rows; new users land with `language = NULL` and must pick on first login. See v6 DIFF at end.
+>
 > **v5 (2026-06-11): + Admin Reading Management.** Introduces a `Role` enum (`USER | ADMIN`) and a `role Role @default(USER)` column on `User`. Powers admin-only mutations on `ReadingExercise` and `ReadingQuestion` (CRUD). No other model changes; existing seeded `User` rows backfill to `USER`. See v5 DIFF at end.
 >
 > **v4 (2026-06-10): + User-created Topics & Flashcards (Feature 7).** `Topic` gains a nullable `userId` FK → `User.id` distinguishing seeded content (`userId IS NULL`, read-only) from user-created content (`userId` set, owner-writable). New index `@@index([userId])` on Topic. Cascade deletes (`Topic` → `Flashcard` → `FlashcardProgress`; `Flashcard` → `FlashcardProgress`) enforced server-side via transactional delete in the API layer; the Prisma relation MAY also use `onDelete: Cascade` to back it up. No changes to `Flashcard`, `FlashcardProgress`, or any other model. See v4 DIFF at end.
@@ -26,6 +28,7 @@ A learner account (or admin). Auth is email + password (bcrypt hash), JWT issued
 | passwordHash | String | bcrypt; never serialized to API |
 | name | String | display name |
 | role | Role | *(v5)* `USER` (default) \| `ADMIN`; gates `/admin/*` routes and reading-content mutations |
+| language | Language? | *(v6)* `EN` \| `ZH` \| `null`; **nullable** — null = user has never picked. Forces redirect to `/choose-language` after auth. Default `null` for new rows; backfill `EN` for pre-v6 rows. |
 | createdAt | DateTime | default now() |
 | updatedAt | DateTime | @updatedAt |
 
@@ -42,6 +45,17 @@ enum Role {
 
 Prisma column: `role Role @default(USER)`. The JWT payload MAY embed `role` to short-circuit DB lookups on the admin middleware, but the authoritative source remains the `User.role` column — refetch on token refresh / role change.
 
+#### Language enum *(v6)*
+
+```prisma
+enum Language {
+  EN
+  ZH
+}
+```
+
+Wire representation is **lowercase** (`"en"`, `"zh"`) — Prisma serializers should `toLowerCase()` on the way out and `toUpperCase()` on the way in. Used by `User.language` (nullable), `Topic.language`, `ReadingExercise.language`, `VocabularyEntry.language`. **Not** used by `Flashcard` (inherits from parent topic). New users have `language = NULL` and are forced through `/choose-language`; existing users were backfilled to `EN` by the v6 migration so they keep going to `/dashboard` directly.
+
 > **Role semantics (v5):**
 > - `USER` (default) — standard learner. Sees `/admin/*` as `404` (route not rendered) and any `/api/reading-exercises` content mutation returns `403 FORBIDDEN`.
 > - `ADMIN` — platform admin. Authoring authority over reading content only (CRUD on `ReadingExercise` + `ReadingQuestion`). Admins are still subject to the v4 ownership rules for user-created topics/flashcards — they do **not** get bypass on other users' personal content. Promotion to `ADMIN` is out-of-band (seed script / DB update); no self-service endpoint in v5.
@@ -55,12 +69,13 @@ A vocabulary topic that groups flashcards (e.g. "Travel", "Business", "Food"). A
 | Field | Type | Notes |
 |-------|------|-------|
 | id | String (cuid) | PK |
-| slug | String | unique, URL-safe (e.g. `travel`); for user-created topics, auto-generated server-side from `title` with `-2,-3,…` dedup suffix |
-| title | String | English display title (e.g. "Travel") |
+| slug | String | URL-safe (e.g. `travel`); for user-created topics, auto-generated server-side from `title`. **`@@unique([slug, language])` *(v6)*** — unique within a language, NOT globally. |
+| title | String | display title in source language (e.g. "Travel", "你好") |
 | titleVi | String | Vietnamese label shown in UI (e.g. "Du lịch") |
 | description | String? | optional short blurb (Vietnamese) |
 | order | Int | sort order in lists, default 0 |
 | userId | String? | *(v4)* nullable FK → `User.id`. **`null` = seeded content (read-only for all users)**; **non-null = user-created (only that user may edit/delete)**. Prisma relation may declare `onDelete: Cascade` so deleting a user removes their topics (and their cards / progress rows through the existing cascade). |
+| language | Language | *(v6)* `EN` \| `ZH`; **non-null**, immutable after creation. Backfill `EN` for all pre-v6 rows. |
 | createdAt | DateTime | default now() |
 | updatedAt | DateTime | @updatedAt |
 
@@ -68,6 +83,8 @@ Relations: `flashcards[]`, `owner` (User?) *(v4 — null when seeded)*.
 
 Indexes:
 - `@@index([userId])` *(v4)* — powers "list this user's topics" filtering and the ownership check on every mutation (PUT/DELETE topic, POST/PUT/DELETE flashcard).
+- `@@unique([slug, language])` *(v6)* — **replaces** the v0 global `@unique` on `slug`. Lets `en/travel` and `zh/travel` coexist. Dedup suffix logic (`-2,-3,…`) for `POST /api/topics` is computed per-language.
+- `@@index([language])` *(v6)* — powers `GET /api/topics?language=...` filtering and dashboard scoping.
 
 Derived (computed at query time, not stored): `flashcardCount`.
 
@@ -79,15 +96,15 @@ Derived (computed at query time, not stored): `flashcardCount`.
 ---
 
 ### Flashcard
-A single vocabulary card belonging to a topic.
+A single vocabulary card belonging to a topic. **Language is NOT stored on the card** *(v6)* — it is derived from `topic.language`. This is a deliberate choice: language never differs from the parent topic, so storing it would invite drift bugs and bloat the cards table.
 
 | Field | Type | Notes |
 |-------|------|-------|
 | id | String (cuid) | PK |
 | topicId | String | FK → Topic.id |
-| front | String | English word/phrase (card front) |
-| back | String | Vietnamese meaning (card back) |
-| example | String? | example sentence in English (card back) |
+| front | String | word/phrase on card front. *(v6)* For `topic.language === EN`: English text. For `topic.language === ZH`: Hán tự (Simplified Hanzi). |
+| back | String | Vietnamese meaning on card back. *(v6)* For `topic.language === ZH`: convention is `"pinyin — Vietnamese meaning"` (e.g. `"nǐ hǎo — xin chào"`) so the back ALWAYS carries the pinyin even though the card has no dedicated field. Frontend MAY parse this convention to render pinyin as a distinct line; backend stores the string verbatim. |
+| example | String? | example sentence on card back. *(v6)* For `topic.language === ZH`: convention is bilingual — `"<Chinese sentence> (<pinyin>) — <Vietnamese gloss>"` joined in the single column. |
 | order | Int | sort order within topic, default 0 |
 | createdAt | DateTime | default now() |
 | updatedAt | DateTime | @updatedAt |
@@ -139,15 +156,20 @@ A reading passage with a set of multiple-choice questions.
 | Field | Type | Notes |
 |-------|------|-------|
 | id | String (cuid) | PK |
-| slug | String | unique, URL-safe |
-| title | String | exercise title (English) |
-| passage | String (Text) | the reading passage (English, may be multi-paragraph) |
-| level | String | difficulty label, e.g. `beginner` \| `intermediate` \| `advanced` |
+| slug | String | URL-safe. *(v6)* **`@@unique([slug, language])`** — unique per-language, NOT globally. |
+| title | String | exercise title in source language |
+| passage | String (Text) | the reading passage, may be multi-paragraph. *(v6)* For `language === ZH`: Simplified Hanzi, MVP 100–200 char passages (HSK 2–3). |
+| level | String | difficulty label. For `EN`: `beginner` \| `intermediate` \| `advanced`. *(v6)* For `ZH`: `HSK1` \| `HSK2` \| `HSK3` (HSK 4–6 out of scope). The column is `String` — backend does NOT enforce the enum-like values; the admin form constrains them. |
 | order | Int | sort order, default 0 |
+| language | Language | *(v6)* `EN` \| `ZH`; **non-null**, immutable after creation. Backfill `EN` for all pre-v6 rows. |
 | createdAt | DateTime | default now() |
 | updatedAt | DateTime | @updatedAt |
 
 Relations: `questions[]` (ReadingQuestion), `attempts[]` (ReadingAttempt).
+
+Indexes *(v6)*:
+- `@@unique([slug, language])` — replaces the v0 global `@unique` on `slug`.
+- `@@index([language])` — powers `GET /api/reading-exercises?language=...` filtering.
 
 Derived: `questionCount`.
 
@@ -209,7 +231,10 @@ A personal vocabulary item owned by a single user. Every entry is private to its
 | exampleSentence | String? | `example_sentence` | example sentence containing the word, optional |
 | notes | String? | `notes` | personal notes, optional |
 | tags | String[] | `tags` | Postgres `text[]`, default `[]`; user-defined topic groups |
-| cefrLevel | String? | `cefr_level` | optional; if present must be one of `A1 A2 B1 B2 C1 C2` |
+| cefrLevel | String? | `cefr_level` | optional; if present must be one of `A1 A2 B1 B2 C1 C2`. *(v6)* MUST be `null` when `language === ZH`. |
+| pinyin | String? | `pinyin` | *(v6)* Hanyu Pinyin with tone marks (e.g. `"nǐ hǎo"`); optional. MUST be `null` when `language === EN`. |
+| hskLevel | Int? | `hsk_level` | *(v6)* HSK level for Chinese vocabulary; if present must be an integer in `[1, 6]`. MUST be `null` when `language === EN`. |
+| language | Language | `language` | *(v6)* `EN` \| `ZH`; **non-null**, immutable after creation. Backfill `EN` for all pre-v6 rows. |
 | isFavorite | Boolean | `is_favorite` | star flag; **default false** |
 | known | Boolean | `known` | flashcard-study "thuộc" state; **default false** |
 | createdAt | DateTime | `created_at` | default now() |
@@ -220,6 +245,7 @@ Relations: `user` (User).
 Indexes:
 - `@@index([userId, createdAt])` — default list ordering (newest-first) scoped to owner.
 - `@@index([userId, word])` — optional; speeds word lookup/search and de-dup checks within a user's set.
+- `@@index([userId, language, createdAt])` *(v6)* — replaces the dominant query path: list owner's entries filtered by language, ordered newest-first. The pure `@@index([userId, createdAt])` stays for queries that don't filter by language (none in v6, but kept for forward-compat).
 
 > Convention: model fields camelCase in Prisma schema, Postgres columns snake_case via `@map`/`@@map`. API serializes camelCase (see `api-contract.md`). `known` lives **directly on the entry** (not in a separate progress table) because a vocabulary entry already belongs to exactly one user — no per-user fan-out needed, unlike `Flashcard`/`FlashcardProgress`.
 
@@ -227,6 +253,12 @@ Validation (enforced at API layer):
 - `word`, `meaning`: trimmed, length ≥ 1 → else `400 VALIDATION_ERROR`.
 - `cefrLevel`: if provided, ∈ `{A1,A2,B1,B2,C1,C2}` → else `400 VALIDATION_ERROR`.
 - `synonyms` / `antonyms` / `tags`: arrays of strings (omitted/null → treated as `[]`).
+- *(v6)* `language` ∈ `{EN, ZH}` (case-insensitive on the wire, stored uppercase) → else `400 VALIDATION_ERROR`.
+- *(v6)* `hskLevel`: if provided, integer in `[1, 6]` → else `400 VALIDATION_ERROR`.
+- *(v6)* **Cross-field rules** — language gates which level field may carry data:
+  - `language = EN` ⇒ `pinyin IS NULL` AND `hskLevel IS NULL`. If body supplies either → `400 VALIDATION_ERROR` ("Trường `pinyin`/`hskLevel` chỉ dùng cho tiếng Trung.").
+  - `language = ZH` ⇒ `cefrLevel IS NULL`. If body supplies it → `400 VALIDATION_ERROR` ("Trường `cefrLevel` không áp dụng cho tiếng Trung — dùng `hskLevel`.").
+- *(v6)* `language` is **immutable on PUT** — the API layer either silently ignores or 400s if the body changes it (recommendation: 400 with a clear message; switching language means delete-and-recreate).
 
 ---
 
@@ -384,3 +416,101 @@ known:false      ──toggle (PUT …/progress)──▶ known:true      ──
   - Add the `Role` enum + the `role` column on `User` in a single Prisma migration. Default `USER` makes the column NOT NULL safely.
   - The first ADMIN account is promoted via the seed script (or a one-off `UPDATE "User" SET role = 'ADMIN' WHERE email = ...`). There is **no** self-service "become admin" endpoint in v5.
   - The JWT payload SHOULD include `role` to avoid an extra DB read on every admin request, but the admin middleware MUST also refetch when the role claim is missing (older tokens issued before the migration) — treat missing claim as `USER` and force the user to re-login to upgrade.
+
+---
+
+## DIFF — v6 (Multi-Language: Chinese Learning Module)
+
+### New enum
+
+```prisma
+enum Language {
+  EN
+  ZH
+}
+```
+
+Wire form is lowercase (`"en"`, `"zh"`). The Prisma layer normalizes on the boundary.
+
+### Extended models
+
+- **`User`** gains:
+  - `language: Language?` — **nullable**; default `null` for new rows; `EN` for backfilled pre-v6 rows. Null = forced through `/choose-language` after auth.
+- **`Topic`** gains:
+  - `language: Language` — non-null; default not declared at DB level (backend always supplies), but Prisma column type allows backfill.
+  - Replaces global `@unique` on `slug` with `@@unique([slug, language])`.
+  - Adds `@@index([language])`.
+- **`ReadingExercise`** gains:
+  - `language: Language` — non-null; same shape as Topic.
+  - Replaces global `@unique` on `slug` with `@@unique([slug, language])`.
+  - Adds `@@index([language])`.
+- **`VocabularyEntry`** gains:
+  - `language: Language` — non-null, immutable.
+  - `pinyin: String?` — Hanyu Pinyin with tone marks; nullable; MUST be null when `language = EN`.
+  - `hskLevel: Int?` — integer 1–6; nullable; MUST be null when `language = EN`.
+  - Adds `@@index([userId, language, createdAt])`.
+- **`Flashcard`** — **unchanged**. Language is inherited from parent `Topic`. Convention for `back`/`example` content when `topic.language = ZH` is documented in the Flashcard table (pinyin + Vietnamese in the same string).
+
+### Unchanged models
+
+`FlashcardProgress`, `ReadingQuestion`, `ReadingAttempt` — no column changes. Their semantics are language-agnostic because the parent resource (Flashcard's topic, ReadingQuestion's exercise, ReadingAttempt's exercise) carries the language.
+
+### Ownership / visibility semantics
+
+- All v4 ownership rules unchanged. The new `language` column does NOT participate in the ownership check.
+- A user-created topic carries the creator's `language` at the moment of creation (or whatever was passed in the body) — switching the creator's `user.language` later does NOT retroactively change the topic's language.
+- Cross-language reads are allowed (`GET /api/topics/:slug` returns the topic regardless of `user.language`). Frontend may nudge a switch in UI but the API does not block.
+
+### Migration plan
+
+Single Prisma migration `2026_06_13_add_language`:
+
+1. **Add `Language` enum** to the schema.
+2. **Drop existing unique indexes** on `Topic.slug` and `ReadingExercise.slug` (they will be replaced by composites).
+3. **Add `language` column** to `User` (nullable, default `NULL` for new rows), `Topic`, `ReadingExercise`, `VocabularyEntry` (non-null with no default — see step 4 for the backfill).
+4. **Backfill in the same migration** (raw SQL inside the Prisma migration file):
+   ```sql
+   UPDATE "User"             SET "language" = 'EN' WHERE "language" IS NULL;  -- ALL pre-v6 users, keeping them out of the language gate
+   UPDATE "Topic"            SET "language" = 'EN';
+   UPDATE "ReadingExercise"  SET "language" = 'EN';
+   UPDATE "VocabularyEntry"  SET "language" = 'EN';
+   ```
+   For `User.language` the column is **kept nullable** (we only backfill existing rows; new rows still default to `NULL` so the language-gate kicks in for new sign-ups).
+   For `Topic`/`ReadingExercise`/`VocabularyEntry`, the backfill runs BEFORE the column is marked `NOT NULL` (Prisma migration: add nullable → backfill → alter to NOT NULL).
+5. **Add new pinyin/hskLevel columns** to `VocabularyEntry` (both nullable). No backfill needed.
+6. **Create new indexes:**
+   - `CREATE UNIQUE INDEX "Topic_slug_language_key" ON "Topic"("slug", "language");`
+   - `CREATE UNIQUE INDEX "ReadingExercise_slug_language_key" ON "ReadingExercise"("slug", "language");`
+   - `CREATE INDEX "Topic_language_idx" ON "Topic"("language");`
+   - `CREATE INDEX "ReadingExercise_language_idx" ON "ReadingExercise"("language");`
+   - `CREATE INDEX "VocabularyEntry_userId_language_createdAt_idx" ON "VocabularyEntry"("userId", "language", "created_at" DESC);`
+
+The migration is forward-only and idempotent under Prisma's migration tracking. Rollback path is documented in the deploy notes (devops-deployer) but is **not** auto-generated — the slug uniqueness change is destructive to roll back (would need de-duplication).
+
+### Validation rules summary (enforced at API layer)
+
+| Field | Rule |
+|-------|------|
+| `User.language` | `EN` \| `ZH` \| `NULL` |
+| `Topic.language` | `EN` \| `ZH`, immutable after create |
+| `ReadingExercise.language` | `EN` \| `ZH`, immutable after create |
+| `VocabularyEntry.language` | `EN` \| `ZH`, immutable after create |
+| `VocabularyEntry.pinyin` | nullable string; MUST be null when `language = EN` |
+| `VocabularyEntry.hskLevel` | nullable integer 1–6; MUST be null when `language = EN` |
+| `VocabularyEntry.cefrLevel` | nullable, ∈ `{A1..C2}`; MUST be null when `language = ZH` |
+
+Cross-field violations → `400 VALIDATION_ERROR` with a Vietnamese `message`.
+
+### What does NOT change
+
+- `FlashcardProgress` schema (no SRS field change).
+- `ReadingQuestion`, `ReadingAttempt` schemas.
+- v4 ownership semantics, v3 SRS logic, v5 admin/role semantics — all carry over verbatim.
+- `Flashcard` shape — no language column.
+
+### Backend implementation notes
+
+- Add an `auth` middleware helper `resolveLanguage(req, queryParam, bodyField)` that returns `req.query.language ?? req.body.language ?? req.user.language ?? throw 403 LANGUAGE_NOT_SELECTED`. Reuse on every list/dashboard handler and every create handler.
+- The `403 LANGUAGE_NOT_SELECTED` error must NOT be thrown by `PUT /api/users/me/language`, detail endpoints, or any endpoint with an explicit language argument.
+- JWT payload MAY include `language` to skip a DB hit, but the language-switch handler (`PUT /api/users/me/language`) MUST issue a new token (or refresh) so the JWT and DB stay in sync. If the JWT does not carry language, the middleware re-reads the column on every request.
+- The seed script (devops) is responsible for seeding HSK 1–3 topics (≥13 topics, ≥200 flashcards) and 2–3 HSK 2–3 reading exercises, all with `language = ZH`. Existing English seeds keep `language = EN`. See `feature-chinese-learning.md` §5 for content scope.

@@ -26,8 +26,11 @@ export default function AuthLayout({
     }
     let active = true;
     fetchMe()
-      .then(() => {
-        if (active) router.replace("/dashboard");
+      .then((res) => {
+        if (!active) return;
+        // v6 — already authed: respect language gate.
+        if (res.user.language === null) router.replace("/choose-language");
+        else router.replace("/dashboard");
       })
       .catch(() => {
         if (active) setChecking(false);

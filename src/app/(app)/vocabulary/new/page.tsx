@@ -6,10 +6,14 @@ import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import { createVocabulary } from "@/hooks/useVocabulary";
 import type { VocabularyInput } from "@/lib/types";
+import { useAuthContext } from "@/components/auth-context";
 import { VocabularyForm } from "@/components/vocabulary-form";
 
 export default function NewVocabularyPage() {
   const router = useRouter();
+  const { user } = useAuthContext();
+  // v6 — gated by (app)/layout: user.language is non-null here.
+  const language = user.language ?? "en";
 
   async function handleSubmit(input: VocabularyInput) {
     await createVocabulary(input);
@@ -30,6 +34,7 @@ export default function NewVocabularyPage() {
       <h1 className="text-3xl font-bold">Thêm từ mới</h1>
 
       <VocabularyForm
+        language={language}
         submitLabel="Lưu từ"
         onSubmit={handleSubmit}
         showDictionary

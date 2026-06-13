@@ -11,12 +11,23 @@ import type {
 
 const iso = (d: Date): string => d.toISOString();
 
+type Language = "en" | "zh";
+
+function asLanguageOrNull(v: string | null): Language | null {
+  return v === "en" || v === "zh" ? v : null;
+}
+
+function asLanguage(v: string): Language {
+  return v === "zh" ? "zh" : "en";
+}
+
 export function toUser(u: PrismaUser) {
   return {
     id: u.id,
     email: u.email,
     name: u.name,
     role: u.role as "USER" | "ADMIN",
+    language: asLanguageOrNull(u.language),
     createdAt: iso(u.createdAt),
   };
 }
@@ -41,6 +52,7 @@ export function toTopicSummary(
     knownCount,
     completionPercent: completionPercent(knownCount, flashcardCount),
     userId: t.userId ?? null,
+    language: asLanguage(t.language),
   };
 }
 
@@ -68,6 +80,7 @@ export function toReadingExerciseSummary(
     level: e.level,
     questionCount,
     bestScore,
+    language: asLanguage(e.language),
     createdAt: iso(e.createdAt),
   };
 }
@@ -121,6 +134,7 @@ export function toReadingAttempt(a: PrismaReadingAttempt) {
 }
 
 // v2 — VocabularyEntry. Optional scalars -> null; array fields always present (never null).
+// v6 — pinyin/hskLevel meaningful only when language === "zh"; cefrLevel only when language === "en".
 export function toVocabularyEntry(v: PrismaVocabularyEntry) {
   return {
     id: v.id,
@@ -135,6 +149,9 @@ export function toVocabularyEntry(v: PrismaVocabularyEntry) {
     notes: v.notes ?? null,
     tags: v.tags ?? [],
     cefrLevel: v.cefrLevel ?? null,
+    pinyin: v.pinyin ?? null,
+    hskLevel: v.hskLevel ?? null,
+    language: asLanguage(v.language),
     isFavorite: v.isFavorite,
     known: v.known,
     createdAt: iso(v.createdAt),

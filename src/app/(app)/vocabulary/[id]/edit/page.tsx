@@ -58,6 +58,8 @@ export default function EditVocabularyPage({
 
       {!loading && !error && data && (
         <VocabularyForm
+          /* v6 — edit form branches on entry.language (immutable per spec). */
+          language={data.language}
           initial={stateFromEntry(data)}
           submitLabel="Lưu thay đổi"
           onSubmit={handleSubmit}

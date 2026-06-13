@@ -10,25 +10,40 @@ import type {
   TopicResetResponse,
   Flashcard,
   DeleteResponse,
+  Language,
 } from "@/lib/types";
 
+/** v6 — build "?language=en|zh" (omit when undefined → server uses user default). */
+function langQuery(language?: Language): string {
+  return language ? `?language=${language}` : "";
+}
+
 // GET /api/topics → LIST WRAPPER { items: TopicSummary[], total }
-export function useTopics() {
+// v6 — optional language filter; omitted → server defaults to user's language.
+export function useTopics(language?: Language) {
+  const q = langQuery(language);
   return useQuery<ListResponse<TopicSummary>>(
     (signal) =>
-      fetchJson<ListResponse<TopicSummary>>("/api/topics", { signal }),
-    "topics",
+      fetchJson<ListResponse<TopicSummary>>(`/api/topics${q}`, { signal }),
+    `topics${q}`,
   );
 }
 
 // GET /api/topics/:slug → TopicDetail (single object, NOT wrapped)
-export function useTopicDetail(slug: string) {
+// v6 amendment 2026-06-13 — slug is unique per (slug, language). The cache
+// key MUST include `language` to avoid stale renders when the user switches
+// language while a detail page is mounted. The optional `language` arg also
+// pins the lookup server-side (passes `?language=`); omitted ⇒ server falls
+// back to user.language → ANY (deterministic).
+export function useTopicDetail(slug: string, language?: Language) {
+  const q = language ? `?language=${language}` : "";
   return useQuery<TopicDetail>(
     (signal) =>
-      fetchJson<TopicDetail>(`/api/topics/${encodeURIComponent(slug)}`, {
-        signal,
-      }),
-    `topic:${slug}`,
+      fetchJson<TopicDetail>(
+        `/api/topics/${encodeURIComponent(slug)}${q}`,
+        { signal },
+      ),
+    `topic:${slug}:${language ?? ""}`,
   );
 }
 
@@ -59,10 +74,12 @@ export function resetTopicProgress(slug: string): Promise<TopicResetResponse> {
 // ---- v4 — Feature 7 — user-created topics & flashcards ----
 
 // POST /api/topics → TopicSummary (single object, NOT wrapped)
+// v6 — optional `language` in body; omitted → server inherits from user.language.
 export function createTopic(body: {
   title: string;
   titleVi: string;
   description?: string;
+  language?: Language;
 }): Promise<TopicSummary> {
   return fetchJson<TopicSummary>("/api/topics", { method: "POST", body });
 }

@@ -35,7 +35,8 @@ export default function RegisterPage() {
     try {
       await register({ name, email, password });
       toast.success("Tạo tài khoản thành công");
-      router.replace("/dashboard");
+      // v6 — register always returns user.language === null → language gate.
+      router.replace("/choose-language");
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.code === "EMAIL_TAKEN") {

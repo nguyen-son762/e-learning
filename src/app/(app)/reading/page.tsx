@@ -13,6 +13,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState, ErrorState } from "@/components/states";
+import { HskBadge } from "@/components/hsk-badge";
+import type { HskLevel } from "@/lib/types";
+
+/** v6 — parse "HSK1"/"HSK 2"/"hsk-3" → 1-6, null when out of shape. */
+function parseHskLevel(level: string): HskLevel | null {
+  const m = level.trim().toUpperCase().match(/^HSK[\s-]?([1-6])$/);
+  return m ? (Number(m[1]) as HskLevel) : null;
+}
 
 export default function ReadingListPage() {
   const { data, loading, error, refetch } = useReadingExercises();
@@ -40,14 +48,20 @@ export default function ReadingListPage() {
 
       {!loading && !error && data && data.items.length > 0 && (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-6">
-          {data.items.map((ex) => (
+          {data.items.map((ex) => {
+            const hsk = ex.language === "zh" ? parseHskLevel(ex.level) : null;
+            return (
             <Card key={ex.id} className="flex flex-col">
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between gap-2">
                   <CardTitle>{ex.title}</CardTitle>
-                  <Badge variant="outline" className="capitalize">
-                    {ex.level}
-                  </Badge>
+                  {hsk ? (
+                    <HskBadge level={hsk} />
+                  ) : (
+                    <Badge variant="outline" className="capitalize">
+                      {ex.level}
+                    </Badge>
+                  )}
                 </div>
               </CardHeader>
               <CardContent className="flex-1 pb-4">
@@ -64,7 +78,8 @@ export default function ReadingListPage() {
                 </Button>
               </CardFooter>
             </Card>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

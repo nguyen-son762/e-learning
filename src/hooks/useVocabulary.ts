@@ -20,6 +20,7 @@ function buildVocabularyQuery(params: VocabularyListParams = {}): string {
   if (params.partOfSpeech) q.set("partOfSpeech", params.partOfSpeech);
   if (params.favorite) q.set("favorite", params.favorite);
   if (params.sort) q.set("sort", params.sort);
+  if (params.language) q.set("language", params.language); // v6
   const s = q.toString();
   return s ? `?${s}` : "";
 }
@@ -37,11 +38,13 @@ export function useVocabulary(params: VocabularyListParams = {}) {
 }
 
 // GET /api/vocabulary/tags → LIST WRAPPER of strings { items: string[], total }
-export function useVocabularyTags() {
+// v6 — optional language filter; omitted → server defaults to user's language.
+export function useVocabularyTags(language?: string) {
+  const q = language ? `?language=${language}` : "";
   return useQuery<ListResponse<string>>(
     (signal) =>
-      fetchJson<ListResponse<string>>("/api/vocabulary/tags", { signal }),
-    "vocabulary:tags",
+      fetchJson<ListResponse<string>>(`/api/vocabulary/tags${q}`, { signal }),
+    `vocabulary:tags${q}`,
   );
 }
 

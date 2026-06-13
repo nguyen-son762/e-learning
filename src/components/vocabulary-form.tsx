@@ -3,8 +3,16 @@
 import { useState } from "react";
 import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
-import type { CefrLevel, VocabularyEntry, VocabularyInput } from "@/lib/types";
+import type {
+  CefrLevel,
+  HskLevel,
+  Language,
+  VocabularyEntry,
+  VocabularyInput,
+} from "@/lib/types";
+import { HSK_LEVELS } from "@/lib/types";
 import { lookupWord, DictionaryNotFoundError } from "@/lib/dictionary";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,8 +27,9 @@ import {
 
 const CEFR_LEVELS: CefrLevel[] = ["A1", "A2", "B1", "B2", "C1", "C2"];
 
-/** Sentinel for "no CEFR level" — Radix Select disallows an empty-string value. */
+/** Sentinel for "no CEFR/HSK level" — Radix Select disallows an empty-string value. */
 const CEFR_NONE = "none";
+const HSK_NONE = "none_hsk";
 
 const POS_NONE = "none_pos";
 export const PARTS_OF_SPEECH: { value: string; label: string }[] = [
@@ -59,7 +68,9 @@ export interface VocabularyFormState {
   exampleSentence: string;
   notes: string;
   tags: string;
-  cefrLevel: string; // "" = none
+  cefrLevel: string; // "" = none. Only meaningful when language === "en".
+  pinyin: string; // v6 — only meaningful when language === "zh".
+  hskLevel: string; // v6 — "" or "1".."6". Only meaningful when language === "zh".
 }
 
 function emptyState(): VocabularyFormState {
@@ -74,6 +85,8 @@ function emptyState(): VocabularyFormState {
     notes: "",
     tags: "",
     cefrLevel: "",
+    pinyin: "",
+    hskLevel: "",
   };
 }
 
@@ -90,14 +103,21 @@ export function stateFromEntry(entry: VocabularyEntry): VocabularyFormState {
     notes: entry.notes ?? "",
     tags: entry.tags.join(", "),
     cefrLevel: entry.cefrLevel ?? "",
+    pinyin: entry.pinyin ?? "",
+    hskLevel: entry.hskLevel != null ? String(entry.hskLevel) : "",
   };
 }
 
-/** Convert form state → contract-shaped request body (omit empty optionals). */
-function toInput(s: VocabularyFormState): VocabularyInput {
+/**
+ * Convert form state → contract-shaped request body (omit empty optionals).
+ * v6 — `language` decides whether cefrLevel or pinyin/hskLevel are sent. The
+ * contract REJECTS mixing (e.g. cefrLevel on a zh entry), so we are strict here.
+ */
+function toInput(s: VocabularyFormState, language: Language): VocabularyInput {
   const input: VocabularyInput = {
     word: s.word.trim(),
     meaning: s.meaning.trim(),
+    language,
   };
   if (s.pronunciation.trim()) input.pronunciation = s.pronunciation.trim();
   if (s.partOfSpeech.trim()) input.partOfSpeech = s.partOfSpeech.trim();
@@ -109,21 +129,33 @@ function toInput(s: VocabularyFormState): VocabularyInput {
   if (antonyms.length) input.antonyms = antonyms;
   const tags = parseList(s.tags);
   if (tags.length) input.tags = tags;
-  if (s.cefrLevel) input.cefrLevel = s.cefrLevel as CefrLevel;
+  if (language === "en") {
+    if (s.cefrLevel) input.cefrLevel = s.cefrLevel as CefrLevel;
+  } else {
+    if (s.pinyin.trim()) input.pinyin = s.pinyin.trim();
+    if (s.hskLevel) input.hskLevel = Number(s.hskLevel) as HskLevel;
+  }
   return input;
 }
 
 export function VocabularyForm({
   initial,
+  language,
   submitLabel,
   onSubmit,
   showDictionary = false,
 }: {
   initial?: VocabularyFormState;
+  /**
+   * v6 — language of this entry. For new entries pass `user.language`; for
+   * edits pass `entry.language` (immutable). Controls which level field shows
+   * (CEFR vs HSK) and whether the pinyin input + dictionary button render.
+   */
+  language: Language;
   submitLabel: string;
   /** Persist; resolves on success, throws ApiError on failure. */
   onSubmit: (input: VocabularyInput) => Promise<void>;
-  /** Show the "Tự điền từ điển" auto-fill button (client-only). */
+  /** Show the "Tự điền từ điển" auto-fill button (client-only, en only). */
   showDictionary?: boolean;
 }) {
   const [form, setForm] = useState<VocabularyFormState>(
@@ -132,6 +164,10 @@ export function VocabularyForm({
   const [submitting, setSubmitting] = useState(false);
   const [looking, setLooking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isZh = language === "zh";
+  // Dictionary auto-fill is English-only (api.dictionaryapi.dev is en).
+  const dictionaryAvailable = showDictionary && language === "en";
 
   function set<K extends keyof VocabularyFormState>(
     key: K,
@@ -144,12 +180,12 @@ export function VocabularyForm({
     e.preventDefault();
     setError(null);
     if (!form.word.trim() || !form.meaning.trim()) {
-      setError("Vui lòng nhập cả từ (word) và nghĩa (meaning).");
+      setError("Vui lòng nhập cả từ và nghĩa.");
       return;
     }
     setSubmitting(true);
     try {
-      await onSubmit(toInput(form));
+      await onSubmit(toInput(form, language));
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : "Không lưu được. Vui lòng thử lại.";
@@ -198,6 +234,16 @@ export function VocabularyForm({
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+      {/* v6 — language indicator on top of the form. */}
+      <div className="flex items-center justify-between">
+        <Badge variant="secondary" className="text-xs">
+          {isZh ? "🇨🇳 Tiếng Trung" : "🇬🇧 Tiếng Anh"}
+        </Badge>
+        <span className="text-xs text-[var(--muted-foreground)]">
+          Ngôn ngữ của từ này không thể đổi.
+        </span>
+      </div>
+
       {error && (
         <p
           role="alert"
@@ -210,9 +256,10 @@ export function VocabularyForm({
       <div className="flex flex-col gap-2">
         <div className="flex items-end justify-between gap-2">
           <Label htmlFor="word">
-            Từ (English) <span className="text-[var(--destructive)]">*</span>
+            {isZh ? "Từ (Hán tự)" : "Từ (English)"}{" "}
+            <span className="text-[var(--destructive)]">*</span>
           </Label>
-          {showDictionary && (
+          {dictionaryAvailable && (
             <Button
               type="button"
               variant="secondary"
@@ -233,10 +280,25 @@ export function VocabularyForm({
           id="word"
           value={form.word}
           onChange={(e) => set("word", e.target.value)}
-          placeholder="ubiquitous"
+          placeholder={isZh ? "你好" : "ubiquitous"}
           required
+          lang={isZh ? "zh-CN" : "en"}
+          className={isZh ? "font-cjk text-lg" : undefined}
         />
       </div>
+
+      {isZh && (
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="pinyin">Pinyin (có dấu thanh)</Label>
+          <Input
+            id="pinyin"
+            value={form.pinyin}
+            onChange={(e) => set("pinyin", e.target.value)}
+            placeholder="nǐ hǎo"
+            lang="zh-Latn-pinyin"
+          />
+        </div>
+      )}
 
       <div className="flex flex-col gap-2">
         <Label htmlFor="meaning">
@@ -254,12 +316,14 @@ export function VocabularyForm({
 
       <div className="grid gap-5 sm:grid-cols-2">
         <div className="flex flex-col gap-2">
-          <Label htmlFor="pronunciation">Phiên âm (IPA)</Label>
+          <Label htmlFor="pronunciation">
+            {isZh ? "Phiên âm bổ sung" : "Phiên âm (IPA)"}
+          </Label>
           <Input
             id="pronunciation"
             value={form.pronunciation}
             onChange={(e) => set("pronunciation", e.target.value)}
-            placeholder="/juːˈbɪkwɪtəs/"
+            placeholder={isZh ? "" : "/juːˈbɪkwɪtəs/"}
           />
         </div>
         <div className="flex flex-col gap-2">
@@ -336,25 +400,51 @@ export function VocabularyForm({
           />
         </div>
         <div className="flex flex-col gap-2">
-          <Label htmlFor="cefrLevel">Cấp độ CEFR</Label>
-          <Select
-            value={form.cefrLevel || CEFR_NONE}
-            onValueChange={(v) =>
-              set("cefrLevel", v === CEFR_NONE ? "" : v)
-            }
-          >
-            <SelectTrigger id="cefrLevel" aria-label="Cấp độ CEFR">
-              <SelectValue placeholder="— Không chọn —" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={CEFR_NONE}>— Không chọn —</SelectItem>
-              {CEFR_LEVELS.map((lvl) => (
-                <SelectItem key={lvl} value={lvl}>
-                  {lvl}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {isZh ? (
+            <>
+              <Label htmlFor="hskLevel">Cấp độ HSK</Label>
+              <Select
+                value={form.hskLevel || HSK_NONE}
+                onValueChange={(v) =>
+                  set("hskLevel", v === HSK_NONE ? "" : v)
+                }
+              >
+                <SelectTrigger id="hskLevel" aria-label="Cấp độ HSK">
+                  <SelectValue placeholder="— Không chọn —" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={HSK_NONE}>— Không chọn —</SelectItem>
+                  {HSK_LEVELS.map((lvl) => (
+                    <SelectItem key={lvl} value={String(lvl)}>
+                      HSK {lvl}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </>
+          ) : (
+            <>
+              <Label htmlFor="cefrLevel">Cấp độ CEFR</Label>
+              <Select
+                value={form.cefrLevel || CEFR_NONE}
+                onValueChange={(v) =>
+                  set("cefrLevel", v === CEFR_NONE ? "" : v)
+                }
+              >
+                <SelectTrigger id="cefrLevel" aria-label="Cấp độ CEFR">
+                  <SelectValue placeholder="— Không chọn —" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={CEFR_NONE}>— Không chọn —</SelectItem>
+                  {CEFR_LEVELS.map((lvl) => (
+                    <SelectItem key={lvl} value={lvl}>
+                      {lvl}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </>
+          )}
         </div>
       </div>
 

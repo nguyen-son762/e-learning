@@ -56,8 +56,9 @@ jobs:
       - name: Install deps (runs prisma generate via postinstall)
         run: npm ci
         env:
-          # prisma generate does not connect — placeholder is enough for CI.
+          # prisma generate does not connect — placeholders are enough for CI.
           DATABASE_URL: postgresql://user:pass@localhost:5432/ci?schema=public
+          DIRECT_URL: postgresql://user:pass@localhost:5432/ci?schema=public
 
       - name: Typecheck
         run: npx tsc --noEmit -p tsconfig.json
@@ -66,3 +67,4 @@ jobs:
         run: npm run build
         env:
           DATABASE_URL: postgresql://user:pass@localhost:5432/ci?schema=public
+          DIRECT_URL: postgresql://user:pass@localhost:5432/ci?schema=public

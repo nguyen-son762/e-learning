@@ -18,6 +18,8 @@ import { useVocabulary, setVocabularyProgress } from "@/hooks/useVocabulary";
 import type { VocabularyEntry } from "@/lib/types";
 import { ApiError } from "@/lib/api";
 import { speak, isTtsSupported } from "@/lib/tts";
+import { HanziText } from "@/components/hanzi-text";
+import { PinyinText } from "@/components/pinyin-text";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
@@ -162,12 +164,23 @@ export default function VocabularyStudyPage() {
               className="block h-full w-full text-left"
             >
               <div className={cn("flip-inner", flipped && "is-flipped")}>
-                {/* FRONT: word + IPA */}
+                {/* FRONT: word + IPA / Hán tự + pinyin */}
                 <div className="flip-face rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-[var(--shadow-flashcard)]">
-                  <span className="text-center text-4xl font-bold">
-                    {current.word}
-                  </span>
-                  {current.pronunciation && (
+                  {current.language === "zh" ? (
+                    <HanziText large className="text-center">
+                      {current.word}
+                    </HanziText>
+                  ) : (
+                    <span className="text-center text-4xl font-bold">
+                      {current.word}
+                    </span>
+                  )}
+                  {current.language === "zh" && current.pinyin && (
+                    <PinyinText size="lg" className="mt-2 font-medium">
+                      {current.pinyin}
+                    </PinyinText>
+                  )}
+                  {current.language === "en" && current.pronunciation && (
                     <span className="mt-2 text-base text-[var(--muted-foreground)]">
                       {current.pronunciation}
                     </span>
@@ -196,14 +209,14 @@ export default function VocabularyStudyPage() {
             </button>
           </div>
 
-          {/* TTS for the current word (separate from the flip button). */}
+          {/* TTS for the current word (separate from the flip button). v6 — pass entry.language. */}
           {ttsOk && (
             <div className="flex justify-center">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => speak(current.word)}
+                onClick={() => speak(current.word, current.language)}
                 aria-label={`Phát âm ${current.word}`}
               >
                 <Volume2 className="h-4 w-4" />

@@ -4,6 +4,7 @@ import { env } from "./lib/env";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 
 import authRoutes from "./routes/authRoutes";
+import userRoutes from "./routes/userRoutes";
 import topicRoutes from "./routes/topicRoutes";
 import flashcardRoutes from "./routes/flashcardRoutes";
 import dashboardRoutes from "./routes/dashboardRoutes";
@@ -26,6 +27,7 @@ export function createApp() {
 
   // API routes (all under /api).
   app.use("/api/auth", authRoutes);
+  app.use("/api/users", userRoutes);
   app.use("/api/topics", topicRoutes);
   app.use("/api/flashcards", flashcardRoutes);
   app.use("/api/dashboard", dashboardRoutes);

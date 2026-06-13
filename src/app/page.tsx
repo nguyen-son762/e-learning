@@ -9,7 +9,8 @@ import { fetchMe } from "@/hooks/useAuth";
 /**
  * Landing → redirect.
  * - No token → /login
- * - Token valid (GET /api/auth/me 200) → /dashboard
+ * - Token valid + user.language === null → /choose-language (v6)
+ * - Token valid + user.language set → /dashboard
  * - Token invalid (401) → clear + /login
  */
 export default function LandingPage() {
@@ -23,8 +24,10 @@ export default function LandingPage() {
     }
     let active = true;
     fetchMe()
-      .then(() => {
-        if (active) router.replace("/dashboard");
+      .then((res) => {
+        if (!active) return;
+        if (res.user.language === null) router.replace("/choose-language");
+        else router.replace("/dashboard");
       })
       .catch(() => {
         clearToken();

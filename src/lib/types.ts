@@ -6,11 +6,19 @@
 
 // ---- Shared objects ----
 
+/**
+ * v6 — Learning content language. Lowercase wire enum.
+ * `null` on User only — means the user has never chosen → frontend redirects
+ * to `/choose-language`. Other entities always carry a concrete value.
+ */
+export type Language = "en" | "zh";
+
 export interface User {
   id: string;
   email: string;
   name: string;
   role: "USER" | "ADMIN"; // v5
+  language: Language | null; // v6 — null = never chosen → /choose-language
   createdAt: string; // ISO 8601
 }
 
@@ -34,6 +42,7 @@ export interface TopicSummary {
   completionPercent: number; // integer 0-100
   // v4 — Feature 7. null = seeded (read-only); non-null = owned by that user.
   userId: string | null;
+  language: Language; // v6
 }
 
 export interface Flashcard {
@@ -72,6 +81,7 @@ export interface ReadingExerciseSummary {
   questionCount: number;
   bestScore: number | null; // null if never attempted
   createdAt: string; // v5
+  language: Language; // v6
 }
 
 export interface ReadingQuestionAdmin {
@@ -91,6 +101,7 @@ export interface ReadingExerciseDetail {
   level: string;
   passage: string;
   questions: ReadingQuestionPublic[]; // no correctIndex
+  language: Language; // v6
 }
 
 export interface ReadingAttempt {
@@ -118,8 +129,12 @@ export interface RecentAttempt extends ReadingAttempt {
 
 // ---- My Vocabulary (v2) ----
 
-/** CEFR levels accepted by the contract for `cefrLevel`. */
+/** CEFR levels accepted by the contract for `cefrLevel`. English only. */
 export type CefrLevel = "A1" | "A2" | "B1" | "B2" | "C1" | "C2";
+
+/** v6 — HSK levels for Chinese vocabulary (integers 1–6). */
+export type HskLevel = 1 | 2 | 3 | 4 | 5 | 6;
+export const HSK_LEVELS: HskLevel[] = [1, 2, 3, 4, 5, 6];
 
 /**
  * VocabularyEntry — mirrors api-contract.md exactly.
@@ -138,14 +153,22 @@ export interface VocabularyEntry {
   exampleSentence: string | null;
   notes: string | null;
   tags: string[];
-  cefrLevel: string | null; // one of CefrLevel or null
+  cefrLevel: string | null; // one of CefrLevel or null. v6: null when language === "zh"
+  pinyin: string | null; // v6 — Hanyu Pinyin with tone marks. null when language === "en"
+  hskLevel: number | null; // v6 — integer 1–6. null when language === "en"
+  language: Language; // v6
   isFavorite: boolean;
   known: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
-/** Editable body for POST / PUT /api/vocabulary[/:id] (word & meaning required). */
+/**
+ * Editable body for POST / PUT /api/vocabulary[/:id] (word & meaning required).
+ * v6 — when `language === "zh"`, pinyin/hskLevel may be sent and cefrLevel must
+ * be omitted; when `language === "en"`, cefrLevel may be sent and pinyin/hskLevel
+ * must be omitted. `language` itself is optional on POST (inherits from user.language).
+ */
 export interface VocabularyInput {
   word: string;
   meaning: string;
@@ -157,6 +180,9 @@ export interface VocabularyInput {
   notes?: string;
   tags?: string[];
   cefrLevel?: CefrLevel;
+  pinyin?: string; // v6
+  hskLevel?: HskLevel; // v6
+  language?: Language; // v6 — optional on POST; server inherits from user
 }
 
 /** Query params for GET /api/vocabulary (all optional). */
@@ -166,6 +192,7 @@ export interface VocabularyListParams {
   partOfSpeech?: string;
   favorite?: "true" | "false";
   sort?: "newest" | "oldest" | "az";
+  language?: Language; // v6 — optional override; defaults to user.language
 }
 
 /** PUT /api/vocabulary/:id/favorite → minimal shape. */
@@ -183,6 +210,18 @@ export interface VocabularyProgressResponse {
 /** DELETE /api/vocabulary/:id → { success: true }. */
 export interface DeleteResponse {
   success: boolean;
+}
+
+// ---- v6 — Language preference endpoint ----
+
+/** PUT /api/users/me/language → updated User wrapper. */
+export interface LanguagePreferenceResponse {
+  user: User;
+}
+
+/** Optional language filter shared by list endpoints. */
+export interface LanguageScopedParams {
+  language?: Language;
 }
 
 // ---- List wrapper ----

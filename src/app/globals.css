@@ -38,6 +38,27 @@
   --border: hsl(214 32% 91%);
   --input: hsl(214 32% 91%);
   --ring: hsl(221 83% 53%);
+
+  /* v6 — pinyin tone-mark colors */
+  --tone-1: hsl(0 0% 11%);
+  --tone-2: hsl(142 71% 35%);
+  --tone-3: hsl(38 92% 45%);
+  --tone-4: hsl(0 72% 51%);
+  --tone-5: hsl(215 16% 47%);
+
+  /* v6 — HSK level badge palette (bg / fg pairs) */
+  --hsk-1-bg: hsl(142 71% 92%);
+  --hsk-1-fg: hsl(142 71% 25%);
+  --hsk-2-bg: hsl(199 89% 92%);
+  --hsk-2-fg: hsl(199 89% 30%);
+  --hsk-3-bg: hsl(271 80% 92%);
+  --hsk-3-fg: hsl(271 80% 35%);
+  --hsk-4-bg: hsl(38 92% 92%);
+  --hsk-4-fg: hsl(38 92% 35%);
+  --hsk-5-bg: hsl(16 88% 92%);
+  --hsk-5-fg: hsl(16 88% 38%);
+  --hsk-6-bg: hsl(0 72% 92%);
+  --hsk-6-fg: hsl(0 72% 38%);
 }
 
 /* Dark theme */
@@ -75,6 +96,27 @@
   --border: hsl(217 33% 22%);
   --input: hsl(217 33% 22%);
   --ring: hsl(221 83% 63%);
+
+  /* v6 — dark theme adjustments for tones (lighter for contrast on dark bg) */
+  --tone-1: hsl(0 0% 96%);
+  --tone-2: hsl(142 71% 60%);
+  --tone-3: hsl(38 92% 65%);
+  --tone-4: hsl(0 72% 65%);
+  --tone-5: hsl(215 16% 70%);
+
+  /* v6 — HSK palette in dark mode: deeper bg, lighter fg */
+  --hsk-1-bg: hsl(142 50% 18%);
+  --hsk-1-fg: hsl(142 71% 78%);
+  --hsk-2-bg: hsl(199 50% 18%);
+  --hsk-2-fg: hsl(199 89% 78%);
+  --hsk-3-bg: hsl(271 50% 22%);
+  --hsk-3-fg: hsl(271 80% 80%);
+  --hsk-4-bg: hsl(38 50% 18%);
+  --hsk-4-fg: hsl(38 92% 78%);
+  --hsk-5-bg: hsl(16 50% 18%);
+  --hsk-5-fg: hsl(16 88% 78%);
+  --hsk-6-bg: hsl(0 50% 22%);
+  --hsk-6-fg: hsl(0 72% 80%);
 }
 
 @theme inline {
@@ -149,4 +191,31 @@ body {
 }
 .flip-back {
   transform: rotateY(180deg);
+}
+
+/* v6 — Chinese typography composites */
+.font-cjk {
+  font-family: var(--font-noto-sans-sc), "Noto Sans SC", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+.text-flashcard-hanzi {
+  font-family: var(--font-noto-sans-sc), "Noto Sans SC", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 4rem; /* 64px */
+  line-height: 1.125;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+@media (max-width: 767px) {
+  .text-flashcard-hanzi {
+    font-size: 3.5rem; /* 56px on mobile per §3.5b */
+  }
+}
+
+.text-flashcard-pinyin {
+  font-size: 1.375rem; /* 22px */
+  line-height: 1.27;
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }

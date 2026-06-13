@@ -2,18 +2,22 @@ import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { AppError } from "../lib/errors";
 import { toTopicSummary, completionPercent } from "../lib/serializers";
+import { resolveListLanguage } from "../lib/language";
 
 // GET /api/dashboard -> { totals, topicProgress: {items,total}, recentAttempts: {items,total} }
+// v6 — scopes the dashboard to the resolved language (?language=en|zh or user.language default).
 export async function getDashboard(req: Request, res: Response): Promise<void> {
   const userId = req.userId!;
+  const language = await resolveListLanguage(userId, req.query.language);
 
   const topics = await prisma.topic.findMany({
+    where: { language },
     orderBy: [{ order: "asc" }, { createdAt: "asc" }],
     include: { _count: { select: { flashcards: true } } },
   });
 
   const knownRows = await prisma.flashcardProgress.findMany({
-    where: { userId, known: true },
+    where: { userId, known: true, flashcard: { topic: { language } } },
     select: { flashcard: { select: { topicId: true } } },
   });
   const knownByTopic = new Map<string, number>();
@@ -30,11 +34,11 @@ export async function getDashboard(req: Request, res: Response): Promise<void> {
   const knownCount = topicSummaries.reduce((a, t) => a + t.knownCount, 0);
 
   const readingAttemptCount = await prisma.readingAttempt.count({
-    where: { userId },
+    where: { userId, exercise: { language } },
   });
 
   const recent = await prisma.readingAttempt.findMany({
-    where: { userId },
+    where: { userId, exercise: { language } },
     orderBy: { createdAt: "desc" },
     take: 5,
     include: { exercise: { select: { slug: true, title: true } } },
@@ -75,6 +79,7 @@ export async function getProgressHistory(
   res: Response
 ): Promise<void> {
   const userId = req.userId!;
+  const language = await resolveListLanguage(userId, req.query.language);
 
   // Strict allowlist: days ∈ {7, 30}, default 7.
   const raw = req.query.days;
@@ -106,6 +111,7 @@ export async function getProgressHistory(
       userId,
       known: true,
       updatedAt: { gte: start, lt: windowEnd },
+      flashcard: { topic: { language } },
     },
     select: { flashcardId: true, updatedAt: true },
   });

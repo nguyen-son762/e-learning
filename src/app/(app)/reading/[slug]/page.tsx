@@ -19,6 +19,22 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { EmptyState, ErrorState } from "@/components/states";
 import { SelectionPopover } from "@/components/selection-popover";
+import { useAuthContext } from "@/components/auth-context";
+import { HanziText } from "@/components/hanzi-text";
+import { HskBadge } from "@/components/hsk-badge";
+import type { HskLevel } from "@/lib/types";
+
+/**
+ * v6 — parse the `level` string of a zh reading exercise into a HSK numeric.
+ * Accepts "HSK1" / "HSK 2" / "hsk-3" etc.; returns null when the string is
+ * out of range or doesn't match, in which case we fall back to the raw
+ * Badge so unfamiliar levels still render.
+ */
+function parseHskLevel(level: string): HskLevel | null {
+  const m = level.trim().toUpperCase().match(/^HSK[\s-]?([1-6])$/);
+  if (!m) return null;
+  return Number(m[1]) as HskLevel;
+}
 
 export default function ReadingExercisePage({
   params,
@@ -26,7 +42,13 @@ export default function ReadingExercisePage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = use(params);
-  const { data, loading, error, refetch } = useReadingExercise(slug);
+  // v6 amendment — pin slug lookup to user's current language so the
+  // (slug, language) compound resolves correctly and cache keys don't collide.
+  const { user } = useAuthContext();
+  const { data, loading, error, refetch } = useReadingExercise(
+    slug,
+    user.language ?? undefined,
+  );
 
   // answers[order] = selected option index, -1 = unanswered
   const [answers, setAnswers] = useState<Record<number, number>>({});
@@ -116,16 +138,38 @@ export default function ReadingExercisePage({
 
       <div className="flex items-center gap-3">
         <h1 className="text-2xl font-bold">{data.title}</h1>
-        <Badge variant="outline" className="capitalize">
-          {data.level}
-        </Badge>
+        {(() => {
+          // v6 — zh exercises carry HSK-style levels; render via HskBadge when
+          // parseable, else fall back to the raw Badge.
+          const hsk =
+            data.language === "zh" ? parseHskLevel(data.level) : null;
+          return hsk ? (
+            <HskBadge level={hsk} />
+          ) : (
+            <Badge variant="outline" className="capitalize">
+              {data.level}
+            </Badge>
+          );
+        })()}
       </div>
 
-      {/* Passage */}
+      {/* Passage — v6: Hán tự rendering for zh exercises (lang + CJK font chain). */}
       <Card>
         <CardContent className="max-h-80 overflow-y-auto p-6">
           <div ref={passageRef}>
-            <p className="whitespace-pre-line leading-relaxed">{data.passage}</p>
+            {data.language === "zh" ? (
+              <HanziText
+                as="p"
+                large={false}
+                className="whitespace-pre-line text-lg leading-relaxed"
+              >
+                {data.passage}
+              </HanziText>
+            ) : (
+              <p className="whitespace-pre-line leading-relaxed">
+                {data.passage}
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>

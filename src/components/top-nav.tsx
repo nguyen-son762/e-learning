@@ -24,6 +24,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { LanguageSwitcher } from "@/components/language-switcher";
 
 
 function isActive(pathname: string, href: string): boolean {
@@ -51,7 +52,14 @@ function ThemeToggle() {
   );
 }
 
-export function TopNav({ user }: { user: User }) {
+export function TopNav({
+  user,
+  onLanguageChanged,
+}: {
+  user: User;
+  /** v6 — called after a successful language switch from the dropdown. */
+  onLanguageChanged: () => void;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -141,6 +149,13 @@ export function TopNav({ user }: { user: User }) {
         </div>
 
         <div className="flex items-center gap-1">
+        {/* v6 — language switcher; hides itself on /choose-language */}
+        {user.language && (
+          <LanguageSwitcher
+            current={user.language}
+            onChanged={onLanguageChanged}
+          />
+        )}
         <ThemeToggle />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
